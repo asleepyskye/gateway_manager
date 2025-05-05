@@ -1,9 +1,12 @@
 package core
 
 import (
+	"context"
 	"log/slog"
 	"os"
 	"os/signal"
+	"pluralkit/manager/internal/etcd"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -40,15 +43,19 @@ type Machine struct {
 	transitions  map[State]map[Event]State
 	sigChannel   chan os.Signal
 	eventChannel chan Event
+
+	etcdClient *etcd.Client
 }
 
-func NewMachine() *Machine {
+func NewMachine(etcdCli *etcd.Client) *Machine {
 	m := &Machine{
 		currentState: Startup,
 		stateFuncs:   make(map[State]StateFunc),
 		transitions:  make(map[State]map[Event]State),
 		sigChannel:   make(chan os.Signal, 1),
 		eventChannel: make(chan Event, 1),
+
+		etcdClient: etcdCli,
 	}
 
 	m.stateFuncs = map[State]StateFunc{
@@ -127,9 +134,17 @@ func (m *Machine) lookupTransition(event Event) (State, bool) {
 	return nextState, true
 }
 
-func (m *Machine) Run() {
+func (m *Machine) Run(wg *sync.WaitGroup) {
+	defer wg.Done()
+	ctx := context.Background()
+
 	for m.currentState != Shutdown {
 		slog.Info("[control] running", slog.String("state", string(m.currentState)))
+
+		//save our current state to etcd
+		//we should probably check for errors here?
+		//but then what do we do? we rely heavily on etcd for safety, should we shutdown?
+		m.etcdClient.Put(ctx, "current_state", string(m.currentState))
 
 		//get the next state
 		stateHandler, ok := m.stateFuncs[m.currentState]
@@ -142,6 +157,7 @@ func (m *Machine) Run() {
 
 		//execute the next state
 		event := stateHandler(m)
+		m.etcdClient.Put(ctx, "last_event", string(event))
 
 		//lookup our next state
 		nextState, ok := m.lookupTransition(event)
@@ -153,6 +169,9 @@ func (m *Machine) Run() {
 			//no transition defined from our current state, so we're just gonna stay here and hope for the best!
 			//this could be problematic if we reach here -- we should ensure our transitions are complete
 		}
+		//maybe we log in etcd that we're transitioning?
+		//or is it just implied by having a next_state?
+		m.etcdClient.Put(ctx, "next_state", string(nextState))
 
 		slog.Info("[control] transitioning",
 			slog.String("from_state", string(m.currentState)),
@@ -162,6 +181,7 @@ func (m *Machine) Run() {
 
 		time.Sleep(1 * time.Second) //sleep for a second just to prevent transitions from being too fast, can probably remove this safely?
 	}
+	m.etcdClient.Put(ctx, "current_state", string(Shutdown)) //if we're here, we're shutting down
 }
 
 func StartupState(m *Machine) Event {
