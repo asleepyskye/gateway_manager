@@ -2,8 +2,13 @@ package api
 
 import (
 	"net/http"
+
 	"github.com/gin-gonic/gin"
 )
+
+func Ping(c *gin.Context) {
+	c.String(http.StatusOK, "pong!")
+}
 
 func GetStatus(c *gin.Context) {
 	c.String(http.StatusOK, "")

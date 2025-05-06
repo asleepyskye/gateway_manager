@@ -39,15 +39,43 @@ roleRef:
 apiVersion: v1
 kind: Pod
 metadata:
-  name: gateway-manager
+  name: pluralkit-manager
   namespace: pluralkit-gateway
 spec:
   serviceAccountName: pk-gtw-serviceaccount
   containers:
   - name: gateway-manager
+    resources:
+      requests:
+        cpu: 1
     image: registry.den.vixen.lgbt/pluralkit/gateway_manager:latest
+    args:
+    - liveness
+    livenessProbe:
+      httpGet:
+        path: /ping
+        port: 5080 #this needs to match the bind port!
+      initialDelaySeconds: 15
+      periodSeconds: 5
     env:
     - name: pluralkit__manager__etcd_addr
       value: 'pk-db.den.vixen.lgbt:2379'
-    - name: pluralkit__manager__bind
+    - name: pluralkit__manager__addr
       value: '0.0.0.0:5080'
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pluralkit-manager
+spec:
+  ipFamilies:
+  - IPv4
+  ipFamilyPolicy: SingleStack
+  ports:
+  - name: manager
+    port: 5080
+    protocol: TCP
+    targetPort: 5080
+  selector:
+    app: pluralkit-manager
+  type: ClusterIP

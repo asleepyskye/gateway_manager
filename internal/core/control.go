@@ -57,7 +57,9 @@ func NewController(etcdCli *etcd.Client) *Machine {
 		etcdClient: etcdCli,
 	}
 
-	val, err := etcdCli.Get(context.Background(), "current_state")
+	ctxGet, cancelGet := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelGet()
+	val, err := etcdCli.Get(ctxGet, "current_state")
 	if err != nil {
 		slog.Info("[control] current state does not exist in etcd")
 	} else if State(val) != Shutdown {
@@ -180,6 +182,7 @@ func (m *Machine) Run(wg *sync.WaitGroup) {
 
 		time.Sleep(1 * time.Second) //sleep for a second just to prevent transitions from being too fast, can probably remove this safely?
 	}
+	m.etcdClient.Put(ctx, "current_state", string(Shutdown))
 }
 
 func MonitorState(m *Machine) Event {

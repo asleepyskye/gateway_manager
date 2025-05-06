@@ -5,14 +5,15 @@ import (
 )
 
 func SetupRoutes(router *gin.Engine) {
+	router.GET("/ping", Ping)
 	router.GET("/status", GetStatus)
 
-    router.POST("/cluster/register", ClusterRegister)
-    router.POST("/cluster/deregister", ClusterDeregister)
-    router.POST("/cluster/status/:cluster_id", SetClusterStatus)
-    
-    router.GET("/config", GetConfig)
-    router.POST("/actions/config", SetConfig)
-    router.POST("/actions/rollout", SetRollout)
-    router.POST("/actions/reshard", SetReshard)
+	router.POST("/cluster/register", ClusterRegister)
+	router.POST("/cluster/deregister", ClusterDeregister)
+	router.POST("/cluster/status/:cluster_id", SetClusterStatus)
+
+	router.GET("/config", GetConfig)
+	router.POST("/actions/config", SetConfig)
+	router.POST("/actions/rollout", SetRollout)
+	router.POST("/actions/reshard", SetReshard)
 }

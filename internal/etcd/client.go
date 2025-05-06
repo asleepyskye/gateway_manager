@@ -2,6 +2,7 @@ package etcd
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"time"
 
@@ -70,6 +71,9 @@ func (c *Client) Get(ctx context.Context, key string) (value string, err error) 
 	resp, e := c.etcdClient.Get(ctx, key)
 	if e != nil {
 		return "", e
+	}
+	if resp.Count == 0 {
+		return "", errors.New("value not found")
 	}
 	return string(resp.Kvs[0].Value), nil
 }

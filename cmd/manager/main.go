@@ -54,11 +54,10 @@ func main() {
 	//just wanted to quickly throw together the api since it isn't the primary focus here
 	slog.Info("setting up http api")
 	gin.SetMode(gin.ReleaseMode) //just gonna set this here for now
-	addr := ":5005"
 	router := gin.Default()
 	api.SetupRoutes(router)
 
-	slog.Info("starting http api on", slog.String("address", addr))
+	slog.Info("starting http api on", slog.String("address", cfg.BindAddr))
 	go func() {
 		router.Run(cfg.BindAddr)
 	}()
