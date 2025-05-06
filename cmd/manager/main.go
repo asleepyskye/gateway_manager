@@ -7,14 +7,28 @@ import (
 	"sync"
 	"syscall"
 
+	"github.com/caarlos0/env/v11"
 	"github.com/gin-gonic/gin"
 
 	"pluralkit/manager/internal/api"
 	"pluralkit/manager/internal/core"
 	"pluralkit/manager/internal/etcd"
+	"pluralkit/manager/internal/k8s"
 )
 
+type config struct {
+	EtcdAddr string `env:"pluralkit__manager__etcd_addr"`
+	BindAddr string `env:"pluralkit__manager__addr"`
+}
+
 func main() {
+	//load config from envs
+	var cfg config
+	err := env.Parse(&cfg)
+	if err != nil {
+		slog.Error("error while loading envs!", slog.Any("error", err))
+	}
+
 	//setup our signal handler
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
@@ -22,11 +36,18 @@ func main() {
 
 	//etcd client
 	slog.Info("setting up etcd client")
-	etcdCli := etcd.NewClient("127.0.0.1:2379") //TODO: don't hardcode this
+	etcdCli := etcd.NewClient(cfg.EtcdAddr)
 	if etcdCli == nil {
 		os.Exit(1) //we print the error in the client, so just exit here
 	}
 	defer etcdCli.Close()
+
+	//k8s client
+	slog.Info("setting up k8s client")
+	k8sCli := k8s.NewClient()
+	if k8sCli == nil {
+		os.Exit(1)
+	}
 
 	//http api
 	//this could be replaced with the default go http handler since it's not overly complex
@@ -39,14 +60,14 @@ func main() {
 
 	slog.Info("starting http api on", slog.String("address", addr))
 	go func() {
-		router.Run(addr)
+		router.Run(cfg.BindAddr)
 	}()
 
 	//state machine
-	slog.Info("setting up control loop")
-	machine := core.NewMachine(etcdCli)
+	slog.Info("setting up control FSM")
+	machine := core.NewController(etcdCli)
 
-	slog.Info("starting control loop")
+	slog.Info("starting control FSM")
 	wg.Add(1)
 	go machine.Run(&wg)
 

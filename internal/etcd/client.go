@@ -23,7 +23,17 @@ func NewClient(addr string) *Client {
 		DialTimeout: 5 * time.Second,
 	})
 	if err != nil {
-		slog.Error("[etcd] error while setting up etcd!", err) //TODO: properly handle etcd errors
+		slog.Error("[etcd] error while setting up etcd!", slog.Any("error", err)) //TODO: properly handle etcd errors
+		return nil
+	}
+
+	//apparently the etcd client can fail to connect without erroring above?
+	//force sync to make sure we're actually connected
+	ctxSync, cancelSync := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancelSync()
+	err = cli.Sync(ctxSync)
+	if err != nil {
+		slog.Error("[etcd] error while setting up etcd!", slog.Any("error", err))
 		return nil
 	}
 
@@ -40,7 +50,7 @@ func (c *Client) Close() error {
 	slog.Info("[etcd] closing etcd client") //TODO: setup a logger for each part so we don't have to prepend [part]?
 	err := c.etcdClient.Close()
 	if err != nil {
-		slog.Error("[etcd] error while closing etcd client!", err)
+		slog.Error("[etcd] error while closing etcd client!", slog.Any("error", err))
 		return err
 	}
 	c.etcdClient = nil
@@ -50,8 +60,16 @@ func (c *Client) Close() error {
 func (c *Client) Put(ctx context.Context, key string, val string) error {
 	_, err := c.etcdClient.Put(ctx, key, val)
 	if err != nil {
-		slog.Error("[etcd] error in put", err)
+		slog.Error("[etcd] error in put", slog.Any("error", err))
 		return err
 	}
 	return nil
+}
+
+func (c *Client) Get(ctx context.Context, key string) (value string, err error) {
+	resp, e := c.etcdClient.Get(ctx, key)
+	if e != nil {
+		return "", e
+	}
+	return string(resp.Kvs[0].Value), nil
 }

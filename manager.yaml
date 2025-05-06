@@ -1,0 +1,53 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: pluralkit-gateway
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: pk-gtw-serviceaccount
+  namespace: pluralkit-gateway
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  namespace: pluralkit-gateway
+  name: pk-gtw-role
+rules:
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list", "watch", "create", "delete", "patch", "update"]
+- apiGroups: [""]
+  resources: ["pods/log"]
+  verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: pk-gtw-binding
+  namespace: pluralkit-gateway
+subjects:
+- kind: ServiceAccount
+  name: pk-gtw-serviceaccount
+  namespace: pluralkit-gateway
+roleRef:
+  kind: Role
+  name: pk-gtw-role
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: gateway-manager
+  namespace: pluralkit-gateway
+spec:
+  serviceAccountName: pk-gtw-serviceaccount
+  containers:
+  - name: gateway-manager
+    image: registry.den.vixen.lgbt/pluralkit/gateway_manager:latest
+    env:
+    - name: pluralkit__manager__etcd_addr
+      value: 'pk-db.den.vixen.lgbt:2379'
+    - name: pluralkit__manager__bind
+      value: '0.0.0.0:5080'

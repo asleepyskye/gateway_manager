@@ -16,7 +16,6 @@ type Event string
 type StateFunc func(*Machine) Event
 
 const (
-	Startup  State = "startup"
 	Monitor  State = "monitor"
 	Rollout  State = "rollout"
 	Rollback State = "rollback"
@@ -47,9 +46,9 @@ type Machine struct {
 	etcdClient *etcd.Client
 }
 
-func NewMachine(etcdCli *etcd.Client) *Machine {
+func NewController(etcdCli *etcd.Client) *Machine {
 	m := &Machine{
-		currentState: Startup,
+		currentState: Monitor,
 		stateFuncs:   make(map[State]StateFunc),
 		transitions:  make(map[State]map[Event]State),
 		sigChannel:   make(chan os.Signal, 1),
@@ -58,20 +57,23 @@ func NewMachine(etcdCli *etcd.Client) *Machine {
 		etcdClient: etcdCli,
 	}
 
+	val, err := etcdCli.Get(context.Background(), "current_state")
+	if err != nil {
+		slog.Info("[control] current state does not exist in etcd")
+	} else if State(val) != Shutdown {
+		m.currentState = State(val)
+	}
+
 	m.stateFuncs = map[State]StateFunc{
-		Startup: StartupState,
-		Monitor: MonitorState,
-		// Rollout:  RolloutState,
-		// Deploy:   DeployState,
-		// Degraded: DegradedState,
-		// Rollback: RollbackState,
-		// Shutdown: ShutdownState,
+		Monitor:  MonitorState,
+		Rollout:  RolloutState,
+		Deploy:   DeployState,
+		Degraded: DegradedState,
+		Rollback: RollbackState,
+		Shutdown: ShutdownState,
 	}
 
 	m.transitions = map[State]map[Event]State{
-		Startup: {
-			EventOk: Monitor,
-		},
 		Monitor: {
 			EventHealthy:    Monitor,
 			EventNotHealthy: Degraded,
@@ -169,9 +171,6 @@ func (m *Machine) Run(wg *sync.WaitGroup) {
 			//no transition defined from our current state, so we're just gonna stay here and hope for the best!
 			//this could be problematic if we reach here -- we should ensure our transitions are complete
 		}
-		//maybe we log in etcd that we're transitioning?
-		//or is it just implied by having a next_state?
-		m.etcdClient.Put(ctx, "next_state", string(nextState))
 
 		slog.Info("[control] transitioning",
 			slog.String("from_state", string(m.currentState)),
@@ -181,12 +180,6 @@ func (m *Machine) Run(wg *sync.WaitGroup) {
 
 		time.Sleep(1 * time.Second) //sleep for a second just to prevent transitions from being too fast, can probably remove this safely?
 	}
-	m.etcdClient.Put(ctx, "current_state", string(Shutdown)) //if we're here, we're shutting down
-}
-
-func StartupState(m *Machine) Event {
-	//TODO: actually do the startup stuff
-	return EventOk
 }
 
 func MonitorState(m *Machine) Event {
@@ -217,6 +210,18 @@ func RolloutState(m *Machine) Event {
 	//should also check for sigterm here, but if we get a sigterm here, that could be problematic?
 	//maybe check number of redeploys -- if it's over a certain amount, something is very broken
 	return EventHealthy
+}
+
+func DeployState(m *Machine) Event {
+	return ""
+}
+
+func DegradedState(m *Machine) Event {
+	return ""
+}
+
+func RollbackState(m *Machine) Event {
+	return ""
 }
 
 func ShutdownState(m *Machine) Event {
