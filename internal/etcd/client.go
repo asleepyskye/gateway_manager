@@ -14,10 +14,12 @@ import (
 
 //TODO: add error types to core for unified error handling here?
 
+// TODO: document this struct.
 type Client struct {
 	etcdClient *clientv3.Client
 }
 
+// TODO: document this function.
 func NewClient(addr string) *Client {
 	cli, err := clientv3.New(clientv3.Config{
 		Endpoints:   []string{addr},
@@ -43,6 +45,7 @@ func NewClient(addr string) *Client {
 	}
 }
 
+// TODO: document this function.
 func (c *Client) Close() error {
 	if c.etcdClient == nil {
 		return nil
@@ -58,6 +61,7 @@ func (c *Client) Close() error {
 	return nil
 }
 
+// TODO: document this function.
 func (c *Client) Put(ctx context.Context, key string, val string) error {
 	_, err := c.etcdClient.Put(ctx, key, val)
 	if err != nil {
@@ -67,6 +71,7 @@ func (c *Client) Put(ctx context.Context, key string, val string) error {
 	return nil
 }
 
+// TODO: document this function.
 func (c *Client) Get(ctx context.Context, key string) (value string, err error) {
 	resp, e := c.etcdClient.Get(ctx, key)
 	if e != nil {

@@ -3,19 +3,26 @@ package core
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
 	"pluralkit/manager/internal/etcd"
 	"pluralkit/manager/internal/k8s"
-	"strconv"
 	"sync"
 	"syscall"
 	"time"
+
+	corev1 "k8s.io/api/core/v1"
 )
 
+// TODO: document this type.
 type State string
+
+// TODO: document this type.
 type Event string
+
+// TODO: document this type.
 type StateFunc func(*Machine) Event
 
 const (
@@ -39,11 +46,13 @@ const (
 	EventSigterm       Event = "sigterm"
 )
 
+// TODO: document this struct.
 type GatewayConfig struct {
 	NumShards     int
-	PodDefinition string //this will probably need to be something other than a string
+	PodDefinition string
 }
 
+// TODO: document this struct.
 type Machine struct {
 	currentState State
 	stateFuncs   map[State]StateFunc
@@ -56,16 +65,17 @@ type Machine struct {
 	config     GatewayConfig
 }
 
-func NewController(etcdCli *etcd.Client, k8sCli *k8s.Client) *Machine {
+// TODO: document this function.
+func NewController(etcdCli *etcd.Client, k8sCli *k8s.Client, eventChan chan Event) *Machine {
 	m := &Machine{
 		currentState: Monitor,
 		stateFuncs:   make(map[State]StateFunc),
 		transitions:  make(map[State]map[Event]State),
 		sigChannel:   make(chan os.Signal, 1),
-		eventChannel: make(chan Event, 1),
 
-		etcdClient: etcdCli,
-		k8sClient:  k8sCli,
+		eventChannel: eventChan,
+		etcdClient:   etcdCli,
+		k8sClient:    k8sCli,
 	}
 
 	ctxGet, cancelGet := context.WithTimeout(context.Background(), 5*time.Second)
@@ -137,10 +147,42 @@ func NewController(etcdCli *etcd.Client, k8sCli *k8s.Client) *Machine {
 	return m
 }
 
+// TODO: document this function.
 func (m *Machine) SendEvent(event Event) {
 	m.eventChannel <- event
 }
 
+// TODO: document this function.
+func (m *Machine) SetConfig(configStr []byte) error {
+	var config GatewayConfig
+
+	err := json.Unmarshal(configStr, &config)
+	if err != nil {
+		slog.Warn("[control] error while unmarshaling config", slog.Any("error", err))
+		return err
+	}
+
+	m.config = config
+
+	err = m.etcdClient.Put(context.Background(), "gateway_config", string(configStr))
+	if err != nil {
+		slog.Warn("[api] error while putting config", slog.Any("error", err))
+		return err
+	}
+
+	return nil
+}
+
+// TODO: document this function.
+func (m *Machine) GetConfig(configStr []byte) ([]byte, error) {
+	jsonStr, err := json.Marshal(m.config)
+	if err != nil {
+		return nil, err
+	}
+	return jsonStr, nil
+}
+
+// TODO: document this function.
 func (m *Machine) lookupTransition(event Event) (State, bool) {
 	//prioritize Sigterm -- if it has a sigterm state, process that first
 	//is there a better way to do this?
@@ -164,6 +206,7 @@ func (m *Machine) lookupTransition(event Event) (State, bool) {
 	return nextState, true
 }
 
+// TODO: document this function.
 func (m *Machine) Run(wg *sync.WaitGroup) {
 	defer wg.Done()
 	ctx := context.Background()
@@ -211,6 +254,7 @@ func (m *Machine) Run(wg *sync.WaitGroup) {
 	m.etcdClient.Put(ctx, "current_state", string(Shutdown))
 }
 
+// TODO: document this function.
 func MonitorState(m *Machine) Event {
 	//TODO: check health here
 	//loop here, just make sure to exit if a new event is recieved
@@ -241,6 +285,7 @@ func MonitorState(m *Machine) Event {
 	}
 }
 
+// TODO: document this function.
 func RolloutState(m *Machine) Event {
 	//TODO: implement rollout commands
 	//wait until rollout complete before returning
@@ -249,40 +294,47 @@ func RolloutState(m *Machine) Event {
 	return EventHealthy
 }
 
+// TODO: document this function.
 func DeployState(m *Machine) Event {
-	ctx := context.Background()
-	val, err := m.etcdClient.Get(ctx, "gateway_config")
+	var pod corev1.Pod
+	slog.Info("config:", slog.Any("val", m.config))
+	err := json.Unmarshal([]byte(m.config.PodDefinition), &pod)
 	if err != nil {
-		slog.Error("[control] gateway config does not exist in etcd!")
-		return EventError
-	} else {
-		var config GatewayConfig
-		err = json.Unmarshal([]byte(val), &config)
-		if err != nil {
-			slog.Error("[control] error while parsing config! ", slog.Any("error", err))
-			return EventError
-		}
-		m.config = config
+		slog.Error("[control] error while parsing config!", slog.Any("error", err))
 	}
 
 	//begin deployment!
-	for i := range m.config.NumShards / 16 {
-		m.etcdClient.Put(ctx, "current_deploy_index", strconv.Itoa(i))
+	numReplicas := m.config.NumShards / 16
+	for i := range numReplicas {
+		pod.Name = fmt.Sprintf("pluralkit-gateway-%d", i)
+		pod.ObjectMeta.Labels["created-by"] = "pluralkit-gateway_manager" //for now put this here, this should be moved to the k8s client
+		_, err := m.k8sClient.CreatePod(&pod)                             //we don't really have a use for the created pod objects? we need to re-get them when fetching status so
+		if err != nil {
+			return EventError
+		}
+		time.Sleep(50 * time.Millisecond) //sleep a short amount of time, just in case
+	}
 
-		//TODO: actually deploy the containers
+	//TODO: make this non-blocking so we can recieve events in the meantime?
+	err = m.k8sClient.WaitForReady(numReplicas, 8*time.Minute) //TODO: don't hardcode timeout values
+	if err != nil {
+		return EventError
 	}
 
 	return EventHealthy
 }
 
+// TODO: document this function.
 func DegradedState(m *Machine) Event {
 	return ""
 }
 
+// TODO: document this function.
 func RollbackState(m *Machine) Event {
 	return ""
 }
 
+// TODO: document this function.
 func ShutdownState(m *Machine) Event {
 	//TODO: cleanup anything we need to before shutdown
 	return ""

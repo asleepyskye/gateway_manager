@@ -16,7 +16,7 @@ func CheckNumPods(m *Machine) bool {
 		//for now just continue and hope for the best
 		return true
 	}
-	if (numPods - 1) != (m.config.NumShards / 16) { //maybe don't hardcode this
+	if numPods != (m.config.NumShards / 16) { //maybe don't hardcode this
 		return false
 	}
 	return true

@@ -1,0 +1,86 @@
+{
+	"name": "gateway",
+	"image": "registry.den.vixen.lgbt/pluralkit/gateway:latest",
+	"command": [
+	"/gateway"
+	],
+	"resources": {
+	"requests": {
+		"cpu": "1"
+	}
+	},
+	"ports": [
+	{
+		"containerPort": 5000
+	}
+	],
+	"readinessProbe": {
+	"httpGet": {
+		"path": "/up",
+		"port": 5000
+	},
+	"initialDelaySeconds": 10,
+	"periodSeconds": 5
+	},
+	"envFrom": [
+	{
+		"configMapRef": {
+		"name": "pluralkit-config-shared"
+		}
+	}
+	],
+	"env": [
+	{
+		"name": "pluralkit__discord__bot_token",
+		"valueFrom": {
+		"secretKeyRef": {
+			"name": "discord-token",
+			"key": "credential"
+		}
+		}
+	},
+	{
+		"name": "pluralkit__db__db_password",
+		"valueFrom": {
+		"secretKeyRef": {
+			"name": "database-password",
+			"key": "credential"
+		}
+		}
+	},
+	{
+		"name": "pluralkit__sentry_url",
+		"valueFrom": {
+		"secretKeyRef": {
+			"name": "dotnet-bot-sentry-url",
+			"key": "credential"
+		}
+		}
+	},
+	{
+		"name": "pluralkit__discord__cluster__total_shards",
+		"valueFrom": {
+		"configMapKeyRef": {
+			"name": "pluralkit-config-shared",
+			"key": "PluralKit__TotalShards"
+		}
+		}
+	},
+	{
+		"name": "pluralkit__discord__max_concurrency",
+		"value": "1"
+	},
+	{
+		"name": "pluralkit__runtime_config_key",
+		"value": "gateway-k8s"
+	},
+	{
+		"name": "STATEFULSET_NAME_FOR_INDEX",
+		"valueFrom": {
+		"fieldRef": {
+			"fieldPath": "metadata.name"
+		}
+		}
+	}
+	]
+}

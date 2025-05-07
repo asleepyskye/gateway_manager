@@ -34,6 +34,9 @@ func main() {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	var wg sync.WaitGroup
 
+	//setup our event channel
+	eventChannel := make(chan core.Event)
+
 	//etcd client
 	slog.Info("setting up etcd client")
 	etcdCli := etcd.NewClient(cfg.EtcdAddr)
@@ -44,10 +47,18 @@ func main() {
 
 	//k8s client
 	slog.Info("setting up k8s client")
-	k8sCli := k8s.NewClient("pluralkit-gateway") //use the namespace 'pluralkit-gateway', prob add an env for this?
+	k8sCli := k8s.NewClient("pluralkit-gateway", "created-by=pluralkit-gateway_manager") //prob add an env for namespace and label selectors?
 	if k8sCli == nil {
 		os.Exit(1)
 	}
+
+	//state machine
+	slog.Info("setting up control FSM")
+	controller := core.NewController(etcdCli, k8sCli, eventChannel)
+
+	slog.Info("starting control FSM")
+	wg.Add(1)
+	go controller.Run(&wg)
 
 	//http api
 	//this could be replaced with the default go http handler since it's not overly complex
@@ -55,20 +66,16 @@ func main() {
 	slog.Info("setting up http api")
 	gin.SetMode(gin.ReleaseMode) //just gonna set this here for now
 	router := gin.Default()
-	api.SetupRoutes(router)
+	apiInstance := api.NewAPI(etcdCli, controller)
+	apiInstance.SetupRoutes(router)
 
 	slog.Info("starting http api on", slog.String("address", cfg.BindAddr))
 	go func() {
-		router.Run(cfg.BindAddr)
+		err := router.Run(cfg.BindAddr)
+		if err != nil {
+			slog.Error("error while running http router!", slog.Any("error", err))
+		}
 	}()
-
-	//state machine
-	slog.Info("setting up control FSM")
-	machine := core.NewController(etcdCli, k8sCli)
-
-	slog.Info("starting control FSM")
-	wg.Add(1)
-	go machine.Run(&wg)
 
 	//wait until sigint/sigterm and safely shutdown
 	sig := <-quit
