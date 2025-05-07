@@ -44,7 +44,7 @@ func main() {
 
 	//k8s client
 	slog.Info("setting up k8s client")
-	k8sCli := k8s.NewClient()
+	k8sCli := k8s.NewClient("pluralkit-gateway") //use the namespace 'pluralkit-gateway', prob add an env for this?
 	if k8sCli == nil {
 		os.Exit(1)
 	}
@@ -64,7 +64,7 @@ func main() {
 
 	//state machine
 	slog.Info("setting up control FSM")
-	machine := core.NewController(etcdCli)
+	machine := core.NewController(etcdCli, k8sCli)
 
 	slog.Info("starting control FSM")
 	wg.Add(1)

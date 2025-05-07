@@ -2,10 +2,13 @@ package core
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"os"
 	"os/signal"
 	"pluralkit/manager/internal/etcd"
+	"pluralkit/manager/internal/k8s"
+	"strconv"
 	"sync"
 	"syscall"
 	"time"
@@ -36,6 +39,11 @@ const (
 	EventSigterm       Event = "sigterm"
 )
 
+type GatewayConfig struct {
+	NumShards     int
+	PodDefinition string //this will probably need to be something other than a string
+}
+
 type Machine struct {
 	currentState State
 	stateFuncs   map[State]StateFunc
@@ -44,9 +52,11 @@ type Machine struct {
 	eventChannel chan Event
 
 	etcdClient *etcd.Client
+	k8sClient  *k8s.Client
+	config     GatewayConfig
 }
 
-func NewController(etcdCli *etcd.Client) *Machine {
+func NewController(etcdCli *etcd.Client, k8sCli *k8s.Client) *Machine {
 	m := &Machine{
 		currentState: Monitor,
 		stateFuncs:   make(map[State]StateFunc),
@@ -55,6 +65,7 @@ func NewController(etcdCli *etcd.Client) *Machine {
 		eventChannel: make(chan Event, 1),
 
 		etcdClient: etcdCli,
+		k8sClient:  k8sCli,
 	}
 
 	ctxGet, cancelGet := context.WithTimeout(context.Background(), 5*time.Second)
@@ -90,6 +101,7 @@ func NewController(etcdCli *etcd.Client) *Machine {
 		},
 		Deploy: {
 			EventHealthy: Monitor,
+			EventError:   Degraded,
 			EventSigterm: Shutdown,
 		},
 		Degraded: {
@@ -104,6 +116,20 @@ func NewController(etcdCli *etcd.Client) *Machine {
 			EventError:   Degraded,
 			EventSigterm: Shutdown,
 		},
+	}
+
+	val, err = etcdCli.Get(ctxGet, "gateway_config")
+	if err != nil {
+		slog.Info("[control] gateway config does not exist in etcd")
+		m.config = GatewayConfig{}
+	} else {
+		var config GatewayConfig
+		err = json.Unmarshal([]byte(val), &config)
+		if err != nil {
+			slog.Error("[control] error while parsing config! ", slog.Any("error", err))
+		} else {
+			m.config = config
+		}
 	}
 
 	signal.Notify(m.sigChannel, syscall.SIGTERM, syscall.SIGINT)
@@ -190,7 +216,6 @@ func MonitorState(m *Machine) Event {
 	//loop here, just make sure to exit if a new event is recieved
 	//(or sigterm)
 	//we should also probably check if a gateway instance isn't healthy because of an issue on discord's end here
-	// -> otherwise we could end up in a redeploy loop
 	for {
 		//is there some better way to time this so we still get events?
 		select {
@@ -203,6 +228,15 @@ func MonitorState(m *Machine) Event {
 		}
 
 		slog.Debug("[control] checking cluster health")
+
+		//first check that we have a config
+		if m.config != (GatewayConfig{}) {
+			ev, _ := RunChecks(m)
+			if !ev {
+				return EventNotHealthy
+			}
+		}
+
 		time.Sleep(10 * time.Second) //TODO: don't hardcode this
 	}
 }
@@ -216,7 +250,29 @@ func RolloutState(m *Machine) Event {
 }
 
 func DeployState(m *Machine) Event {
-	return ""
+	ctx := context.Background()
+	val, err := m.etcdClient.Get(ctx, "gateway_config")
+	if err != nil {
+		slog.Error("[control] gateway config does not exist in etcd!")
+		return EventError
+	} else {
+		var config GatewayConfig
+		err = json.Unmarshal([]byte(val), &config)
+		if err != nil {
+			slog.Error("[control] error while parsing config! ", slog.Any("error", err))
+			return EventError
+		}
+		m.config = config
+	}
+
+	//begin deployment!
+	for i := range m.config.NumShards / 16 {
+		m.etcdClient.Put(ctx, "current_deploy_index", strconv.Itoa(i))
+
+		//TODO: actually deploy the containers
+	}
+
+	return EventHealthy
 }
 
 func DegradedState(m *Machine) Event {
