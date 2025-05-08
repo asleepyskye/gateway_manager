@@ -8,8 +8,8 @@ CONTENT=$(cat "$FILE")
 
 read -r -d '' JSON_PAYLOAD <<EOF
 {
-  "num_shards": $NUM_SHARDS,
-  "pod_definition": $CONTENT
+  "NumShards": $NUM_SHARDS,
+  "PodDefinition": $CONTENT
 }
 EOF
 response=$(curl -s -X POST "$URL" \

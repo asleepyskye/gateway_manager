@@ -49,7 +49,7 @@ const (
 // TODO: document this struct.
 type GatewayConfig struct {
 	NumShards     int
-	PodDefinition string
+	PodDefinition json.RawMessage
 }
 
 // TODO: document this struct.
@@ -174,7 +174,7 @@ func (m *Machine) SetConfig(configStr []byte) error {
 }
 
 // TODO: document this function.
-func (m *Machine) GetConfig(configStr []byte) ([]byte, error) {
+func (m *Machine) GetConfig() ([]byte, error) {
 	jsonStr, err := json.Marshal(m.config)
 	if err != nil {
 		return nil, err
@@ -274,7 +274,7 @@ func MonitorState(m *Machine) Event {
 		slog.Debug("[control] checking cluster health")
 
 		//first check that we have a config
-		if m.config != (GatewayConfig{}) {
+		if m.config.NumShards != 0 && m.config.PodDefinition != nil {
 			ev, _ := RunChecks(m)
 			if !ev {
 				return EventNotHealthy
@@ -297,8 +297,7 @@ func RolloutState(m *Machine) Event {
 // TODO: document this function.
 func DeployState(m *Machine) Event {
 	var pod corev1.Pod
-	slog.Info("config:", slog.Any("val", m.config))
-	err := json.Unmarshal([]byte(m.config.PodDefinition), &pod)
+	err := json.Unmarshal(m.config.PodDefinition, &pod)
 	if err != nil {
 		slog.Error("[control] error while parsing config!", slog.Any("error", err))
 	}
@@ -326,7 +325,9 @@ func DeployState(m *Machine) Event {
 
 // TODO: document this function.
 func DegradedState(m *Machine) Event {
-	return ""
+	//just for now...
+	time.Sleep(10 * time.Second)
+	return EventHealthy
 }
 
 // TODO: document this function.

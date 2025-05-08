@@ -64,7 +64,7 @@ func main() {
 	//this could be replaced with the default go http handler since it's not overly complex
 	//just wanted to quickly throw together the api since it isn't the primary focus here
 	slog.Info("setting up http api")
-	gin.SetMode(gin.ReleaseMode) //just gonna set this here for now
+	gin.SetMode(gin.ReleaseMode)
 	router := gin.Default()
 	apiInstance := api.NewAPI(etcdCli, controller)
 	apiInstance.SetupRoutes(router)

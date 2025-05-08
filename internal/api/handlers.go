@@ -37,14 +37,14 @@ func (a *API) SetClusterStatus(c *gin.Context) {
 
 // TODO: document this function.
 func (a *API) GetConfig(c *gin.Context) {
-	val, err := a.EtcdClient.Get(c, "gateway_config")
+	val, err := a.Controller.GetConfig()
 	if err != nil {
-		c.String(http.StatusInternalServerError, "error while getting config from etcd")
+		c.String(http.StatusInternalServerError, "error while getting config from control")
 		slog.Warn("[api] error while getting config", slog.Any("error", err))
 		return
 	}
 
-	c.JSON(http.StatusOK, val)
+	c.Data(http.StatusOK, "application/json", val)
 }
 
 // TODO: document this function.
