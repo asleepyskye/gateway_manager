@@ -81,6 +81,7 @@ spec:
     port: 5020
     protocol: TCP
     targetPort: 5020
+    nodePort: 30020 #tmp, for easier dev
   selector:
     app: pluralkit-manager
   type: NodePort

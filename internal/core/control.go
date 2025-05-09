@@ -305,9 +305,16 @@ func DeployState(m *Machine) Event {
 	//begin deployment!
 	numReplicas := m.config.NumShards / 16
 	for i := range numReplicas {
+		//TODO: delete old pods and wait for them to properly shutdown
+
 		pod.Name = fmt.Sprintf("pluralkit-gateway-%d", i)
+
+		if pod.ObjectMeta.Labels == nil {
+			pod.ObjectMeta.Labels = make(map[string]string)
+		}
 		pod.ObjectMeta.Labels["created-by"] = "pluralkit-gateway_manager" //for now put this here, this should be moved to the k8s client
-		_, err := m.k8sClient.CreatePod(&pod)                             //we don't really have a use for the created pod objects? we need to re-get them when fetching status so
+
+		_, err := m.k8sClient.CreatePod(&pod) //we don't really have a use for the created pod objects? we need to re-get them when fetching status so
 		if err != nil {
 			return EventError
 		}
