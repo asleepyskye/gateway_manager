@@ -1,10 +1,10 @@
 #!/bin/sh
 
-FILE="gateway.json"
-URL="http://k8s-0.den.vixen.lgbt:32054/actions/config"
+FILE="gateway.yaml"
+URL="http://manager.pk.den.vixen.lgbt/actions/config"
 NUM_SHARDS="32"
 
-CONTENT=$(cat "$FILE")
+CONTENT=$(yq -o=json "$FILE")
 
 read -r -d '' JSON_PAYLOAD <<EOF
 {
