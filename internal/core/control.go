@@ -9,11 +9,14 @@ import (
 	"os/signal"
 	"pluralkit/manager/internal/etcd"
 	"pluralkit/manager/internal/k8s"
+	"strconv"
 	"sync"
 	"syscall"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // TODO: document this type.
@@ -287,10 +290,78 @@ func MonitorState(m *Machine) Event {
 
 // TODO: document this function.
 func RolloutState(m *Machine) Event {
-	//TODO: implement rollout commands
-	//wait until rollout complete before returning
 	//should also check for sigterm here, but if we get a sigterm here, that could be problematic?
-	//maybe check number of redeploys -- if it's over a certain amount, something is very broken
+	ctx := context.Background()
+	var pod corev1.Pod
+	err := json.Unmarshal(m.config.PodDefinition, &pod)
+	if err != nil {
+		slog.Error("[control] error while parsing config!", slog.Any("error", err))
+		return EventError
+	}
+
+	startIndex := 0
+	status, err := m.etcdClient.Get(ctx, "rollout_status")
+	if err != nil {
+		slog.Warn("[control] rollout state does not exist in etcd!")
+		status = "done"
+	}
+	if status != "done" {
+		startIndexStr, err := m.etcdClient.Get(ctx, "rollout_index")
+		if err != nil {
+			slog.Warn("[control] error while getting rollout index!")
+		} else {
+			startIndex, err = strconv.Atoi(startIndexStr)
+			if err != nil {
+				slog.Warn("[control] error while parsing rollout index!")
+			}
+		}
+	}
+
+	prevUid, err := m.etcdClient.Get(ctx, "current_uid")
+	if err != nil {
+		slog.Error("[control] error while getting pod uid from etcd!")
+		return EventError
+	}
+
+	uid := ""
+	if status != "done" {
+		uid, err = m.etcdClient.Get(ctx, "current_rollout_uid")
+		if err != nil {
+			slog.Warn("[control] error while getting current rollout uid!")
+		}
+	}
+	if uid == "" {
+		uid := GenerateRandomID()
+		for prevUid == uid {
+			uid = GenerateRandomID() //ensure our uid is not the same, despite very very small odds
+		}
+	}
+
+	//begin rollout!
+	numReplicas := m.config.NumShards / 16
+	for i := startIndex; i < numReplicas; i++ {
+		m.etcdClient.Put(ctx, "rollout_index", strconv.Itoa(i))
+
+		oldPod := fmt.Sprintf("pluralkit-gateway-%s-%d", prevUid, i)
+		pod.Name = fmt.Sprintf("pluralkit-gateway-%s-%d", uid, i)
+		if status != "waiting" {
+			_, err := m.k8sClient.CreatePod(&pod)
+			if err != nil {
+				return EventError
+			}
+		}
+
+		m.etcdClient.Put(ctx, "rollout_status", "waiting")
+		m.k8sClient.WaitForReady(pod.Name, 8*time.Minute) //TODO: don't hardcode timeout values
+
+		//switch between the pods here
+
+		m.k8sClient.DeletePod(oldPod)
+		m.etcdClient.Put(ctx, "rollout_status", "running")
+
+		time.Sleep(50 * time.Millisecond) //sleep a short amount of time, just in case
+	}
+	m.etcdClient.Put(ctx, "rollout_status", "done")
 	return EventHealthy
 }
 
@@ -300,29 +371,57 @@ func DeployState(m *Machine) Event {
 	err := json.Unmarshal(m.config.PodDefinition, &pod)
 	if err != nil {
 		slog.Error("[control] error while parsing config!", slog.Any("error", err))
+		return EventError
+	}
+	uid := GenerateRandomID()
+	m.etcdClient.Put(context.Background(), "current_uid", uid)
+
+	service := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "pluralkit-gateway",
+		},
+		Spec: corev1.ServiceSpec{
+			Selector: map[string]string{
+				"app": "pluralkit-gateway",
+			},
+			Ports: []corev1.ServicePort{
+				{
+					Protocol: corev1.ProtocolTCP,
+					Port:     5000,
+				},
+			},
+			ClusterIP: corev1.ClusterIPNone,
+		},
+	}
+
+	//delete all pods created by the manager in the namespace, if they exist
+	err = m.k8sClient.DeleteAllPods()
+	if err != nil {
+		return EventError
+	}
+
+	//TODO: wait for pods to be deleted here
+	time.Sleep(8 * time.Second)
+
+	//make sure the service exists
+	_, err = m.k8sClient.CreateService(service)
+	if err != nil && !errors.IsAlreadyExists(err) {
+		return EventError
 	}
 
 	//begin deployment!
 	numReplicas := m.config.NumShards / 16
 	for i := range numReplicas {
-		//TODO: delete old pods and wait for them to properly shutdown
+		pod.Name = fmt.Sprintf("pluralkit-gateway-%s-%d", uid, i)
 
-		pod.Name = fmt.Sprintf("pluralkit-gateway-%d", i)
-
-		if pod.ObjectMeta.Labels == nil {
-			pod.ObjectMeta.Labels = make(map[string]string)
-		}
-		pod.ObjectMeta.Labels["created-by"] = "pluralkit-gateway_manager" //for now put this here, this should be moved to the k8s client
-
-		_, err := m.k8sClient.CreatePod(&pod) //we don't really have a use for the created pod objects? we need to re-get them when fetching status so
+		_, err := m.k8sClient.CreatePod(&pod)
 		if err != nil {
 			return EventError
 		}
 		time.Sleep(50 * time.Millisecond) //sleep a short amount of time, just in case
 	}
 
-	//TODO: make this non-blocking so we can recieve events in the meantime?
-	err = m.k8sClient.WaitForReady(numReplicas, 8*time.Minute) //TODO: don't hardcode timeout values
+	err = m.k8sClient.WaitForReadyAll(numReplicas, 8*time.Minute) //TODO: don't hardcode timeout values
 	if err != nil {
 		return EventError
 	}
@@ -335,6 +434,8 @@ func DegradedState(m *Machine) Event {
 	//just for now...
 	time.Sleep(10 * time.Second)
 	return EventHealthy
+
+	//maybe add a 'repair' state that does what deploy does, but for not-healthy pods?
 }
 
 // TODO: document this function.

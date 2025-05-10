@@ -2,10 +2,12 @@ package main
 
 import (
 	"log/slog"
+	"math/rand"
 	"os"
 	"os/signal"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/caarlos0/env/v11"
 	"github.com/gin-gonic/gin"
@@ -29,6 +31,9 @@ func main() {
 		slog.Error("error while loading envs!", slog.Any("error", err))
 	}
 
+	//seed rand
+	rand.New(rand.NewSource(time.Now().UnixNano()))
+
 	//setup our signal handler
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
@@ -47,7 +52,7 @@ func main() {
 
 	//k8s client
 	slog.Info("setting up k8s client")
-	k8sCli := k8s.NewClient("pluralkit-gateway", "created-by=pluralkit-gateway_manager") //prob add an env for namespace and label selectors?
+	k8sCli := k8s.NewClient("pluralkit-gateway", "pluralkit-gateway_manager") //prob add an env for namespace and label selectors?
 	if k8sCli == nil {
 		os.Exit(1)
 	}
