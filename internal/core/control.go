@@ -352,13 +352,19 @@ func RolloutState(m *Machine) Event {
 		}
 
 		m.etcdClient.Put(ctx, "rollout_status", "waiting")
-		m.k8sClient.WaitForReady(pod.Name, 8*time.Minute) //TODO: don't hardcode timeout values
+		err = m.k8sClient.WaitForReady(pod.Name, 8*time.Minute) //TODO: don't hardcode timeout values
+		if err != nil {
+			return EventError
+		}
 
-		//switch between the pods here
+		//TODO: switch between the pods here
 
-		m.k8sClient.DeletePod(oldPod)
+		err = m.k8sClient.DeletePod(oldPod)
+		if err != nil && !errors.IsNotFound(err) {
+			return EventError
+		}
+
 		m.etcdClient.Put(ctx, "rollout_status", "running")
-
 		time.Sleep(50 * time.Millisecond) //sleep a short amount of time, just in case
 	}
 	m.etcdClient.Put(ctx, "rollout_status", "done")
