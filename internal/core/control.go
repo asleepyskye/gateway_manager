@@ -299,6 +299,8 @@ func RolloutState(m *Machine) Event {
 		return EventError
 	}
 
+	//TODO: check that we have a healthy deployment first?
+
 	//TODO: probably add a safety check here to make sure our shard count hasn't changed?
 	//this might also just need to be implemented elsewhere
 
@@ -348,7 +350,10 @@ func RolloutState(m *Machine) Event {
 		slog.Info("[control] rolling out", slog.Int("rollout_index", i), slog.Int("num_replicas", numReplicas))
 
 		oldPod := fmt.Sprintf("pluralkit-gateway-%s-%d", prevUid, i)
+
 		pod.Name = fmt.Sprintf("pluralkit-gateway-%s-%d", uid, i)
+		pod.Spec.Hostname = pod.Name
+		pod.Spec.Subdomain = "gw-svc"
 		if status != "waiting" {
 			_, err := m.k8sClient.CreatePod(&pod)
 			if err != nil {
@@ -396,7 +401,7 @@ func DeployState(m *Machine) Event {
 
 	service := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: "pluralkit-gateway",
+			Name: "gw-svc",
 		},
 		Spec: corev1.ServiceSpec{
 			Selector: map[string]string{
@@ -431,6 +436,8 @@ func DeployState(m *Machine) Event {
 	numReplicas := m.config.NumShards / 16
 	for i := range numReplicas {
 		pod.Name = fmt.Sprintf("pluralkit-gateway-%s-%d", uid, i)
+		pod.Spec.Hostname = pod.Name
+		pod.Spec.Subdomain = "gw-svc"
 
 		_, err := m.k8sClient.CreatePod(&pod)
 		if err != nil {
