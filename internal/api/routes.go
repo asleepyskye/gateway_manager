@@ -1,6 +1,7 @@
 package api
 
 import (
+	"net/http"
 	"pluralkit/manager/internal/core"
 	"pluralkit/manager/internal/etcd"
 
@@ -8,14 +9,20 @@ import (
 )
 
 type API struct {
-	EtcdClient *etcd.Client
-	Controller *core.Machine
+	EtcdClient     *etcd.Client
+	Controller     *core.Machine
+	CacheEndpoints *[]string
+	NumShards      *int
+	httpClient     http.Client
 }
 
 func NewAPI(etcdCli *etcd.Client, controller *core.Machine) *API {
 	return &API{
-		EtcdClient: etcdCli,
-		Controller: controller,
+		EtcdClient:     etcdCli,
+		Controller:     controller,
+		CacheEndpoints: controller.GetCacheEndpoints(),
+		NumShards:      controller.GetNumShards(),
+		httpClient:     http.Client{},
 	}
 }
 
@@ -30,4 +37,6 @@ func (a *API) SetupRoutes(router *gin.Engine) {
 	router.POST("/actions/config", a.SetConfig)
 	router.POST("/actions/rollout", a.SetRollout)
 	router.POST("/actions/deploy", a.SetDeploy)
+
+	router.GET("/cache/:id/*path", a.GetCache)
 }

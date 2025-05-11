@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -15,7 +16,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/errors"
+	k8sErrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -63,9 +64,11 @@ type Machine struct {
 	sigChannel   chan os.Signal
 	eventChannel chan Event
 
-	etcdClient *etcd.Client
-	k8sClient  *k8s.Client
-	config     GatewayConfig
+	etcdClient     *etcd.Client
+	k8sClient      *k8s.Client
+	config         GatewayConfig
+	cacheEndpoints []string
+	numShards      int
 }
 
 // TODO: document this function.
@@ -76,9 +79,10 @@ func NewController(etcdCli *etcd.Client, k8sCli *k8s.Client, eventChan chan Even
 		transitions:  make(map[State]map[Event]State),
 		sigChannel:   make(chan os.Signal, 1),
 
-		eventChannel: eventChan,
-		etcdClient:   etcdCli,
-		k8sClient:    k8sCli,
+		eventChannel:   eventChan,
+		etcdClient:     etcdCli,
+		k8sClient:      k8sCli,
+		cacheEndpoints: make([]string, 0, 256),
 	}
 
 	ctxGet, cancelGet := context.WithTimeout(context.Background(), 5*time.Second)
@@ -145,6 +149,16 @@ func NewController(etcdCli *etcd.Client, k8sCli *k8s.Client, eventChan chan Even
 		}
 	}
 
+	val, err = etcdCli.Get(ctxGet, "cache_endpoints")
+	if err != nil {
+		slog.Info("[control] cache endpoints does not exist in etcd")
+	} else {
+		err = json.Unmarshal([]byte(val), &m.cacheEndpoints)
+		if err != nil {
+			slog.Error("[control] error while parsing cache endpoints!", slog.Any("error", err))
+		}
+	}
+
 	signal.Notify(m.sigChannel, syscall.SIGTERM, syscall.SIGINT)
 
 	return m
@@ -158,6 +172,10 @@ func (m *Machine) SendEvent(event Event) {
 // TODO: document this function.
 func (m *Machine) SetConfig(configStr []byte) error {
 	var config GatewayConfig
+
+	if m.currentState != Monitor && m.currentState != Degraded {
+		return errors.New("cannot set config in current state")
+	}
 
 	err := json.Unmarshal(configStr, &config)
 	if err != nil {
@@ -183,6 +201,16 @@ func (m *Machine) GetConfig() ([]byte, error) {
 		return nil, err
 	}
 	return jsonStr, nil
+}
+
+// TODO: document this function.
+func (m *Machine) GetCacheEndpoints() *([]string) {
+	return &m.cacheEndpoints
+}
+
+// TODO: document this function.
+func (m *Machine) GetNumShards() *(int) {
+	return &m.numShards
 }
 
 // TODO: document this function.
@@ -345,11 +373,12 @@ func RolloutState(m *Machine) Event {
 
 	//begin rollout!
 	numReplicas := m.config.NumShards / 16
+	oldPod := ""
 	for i := startIndex; i < numReplicas; i++ {
 		m.etcdClient.Put(ctx, "rollout_index", strconv.Itoa(i))
 		slog.Info("[control] rolling out", slog.Int("rollout_index", i), slog.Int("num_replicas", numReplicas))
 
-		oldPod := fmt.Sprintf("pluralkit-gateway-%s-%d", prevUid, i)
+		oldPod = fmt.Sprintf("pluralkit-gateway-%s-%d", prevUid, i)
 
 		pod.Name = fmt.Sprintf("pluralkit-gateway-%s-%d", uid, i)
 		pod.Spec.Hostname = pod.Name
@@ -371,9 +400,17 @@ func RolloutState(m *Machine) Event {
 		}
 
 		//TODO: switch between the pods here
+		m.cacheEndpoints[i] = fmt.Sprintf("http://%s.%s:5000", pod.Spec.Hostname, pod.Spec.Subdomain)
+
+		//TODO: do this more efficient
+		jsonData, err := json.Marshal(m.cacheEndpoints)
+		if err != nil {
+			slog.Warn("error while marshalling cache endpoints!", slog.Any("err", err))
+		}
+		m.etcdClient.Put(ctx, "cache_endpoints", string(jsonData))
 
 		err = m.k8sClient.DeletePod(oldPod)
-		if err != nil && !errors.IsNotFound(err) {
+		if err != nil && !k8sErrors.IsNotFound(err) {
 			m.etcdClient.Put(ctx, "rollout_status", "error")
 			return EventError
 		}
@@ -383,8 +420,11 @@ func RolloutState(m *Machine) Event {
 	}
 
 	//TODO: wait for last pod to delete before continuing here!
+	//maybe
+	//maybe this should be handled in deletepod?
 
 	m.etcdClient.Put(ctx, "rollout_status", "done")
+	m.etcdClient.Put(ctx, "current_uid", uid)
 	return EventHealthy
 }
 
@@ -428,12 +468,13 @@ func DeployState(m *Machine) Event {
 
 	//make sure the service exists
 	_, err = m.k8sClient.CreateService(service)
-	if err != nil && !errors.IsAlreadyExists(err) {
+	if err != nil && !k8sErrors.IsAlreadyExists(err) {
 		return EventError
 	}
 
 	//begin deployment!
 	numReplicas := m.config.NumShards / 16
+	m.cacheEndpoints = make([]string, numReplicas)
 	for i := range numReplicas {
 		pod.Name = fmt.Sprintf("pluralkit-gateway-%s-%d", uid, i)
 		pod.Spec.Hostname = pod.Name
@@ -443,6 +484,8 @@ func DeployState(m *Machine) Event {
 		if err != nil {
 			return EventError
 		}
+
+		m.cacheEndpoints[i] = fmt.Sprintf("http://%s.%s:5000", pod.Spec.Hostname, pod.Spec.Subdomain)
 		time.Sleep(50 * time.Millisecond) //sleep a short amount of time, just in case
 	}
 
@@ -452,6 +495,13 @@ func DeployState(m *Machine) Event {
 		return EventError
 	}
 
+	jsonData, err := json.Marshal(m.cacheEndpoints)
+	if err != nil {
+		slog.Warn("error while marshalling cache endpoints!", slog.Any("err", err))
+	}
+	m.etcdClient.Put(context.Background(), "cache_endpoints", string(jsonData))
+
+	m.numShards = m.config.NumShards
 	return EventHealthy
 }
 

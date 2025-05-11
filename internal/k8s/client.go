@@ -107,7 +107,7 @@ func (c *Client) CreatePod(pod *corev1.Pod) (*corev1.Pod, error) {
 
 // TODO: document this function.
 func (c *Client) DeletePod(name string) error {
-	deletePolicy := metav1.DeletePropagationBackground
+	deletePolicy := metav1.DeletePropagationForeground
 	deleteOptions := metav1.DeleteOptions{
 		PropagationPolicy: &deletePolicy,
 	} //TODO: maybe don't hardcode this
@@ -137,15 +137,6 @@ func (c *Client) WaitForReadyAll(expected int, timeout time.Duration) error {
 		for _, pod := range podList.Items {
 			if pod.Status.Phase == "Failed" {
 				return true, errors.New("at least one failed pod")
-			}
-			for _, condition := range pod.Status.Conditions {
-				if condition.Type == "DisruptionTarget" && condition.Status == "True" {
-					return true, errors.New("at least one disrupted pod")
-				}
-				if condition.Type == "Ready" && condition.Status == "True" {
-					numReady++
-					break
-				}
 			}
 		}
 

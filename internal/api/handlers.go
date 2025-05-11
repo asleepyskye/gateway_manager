@@ -4,6 +4,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 
 	"github.com/gin-gonic/gin"
 
@@ -66,4 +67,46 @@ func (a *API) SetRollout(c *gin.Context) {
 func (a *API) SetDeploy(c *gin.Context) {
 	a.Controller.SendEvent(core.EventDeployCmd)
 	c.String(http.StatusOK, "")
+}
+
+func (a *API) GetCache(c *gin.Context) {
+	clusterID, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		c.String(http.StatusInternalServerError, "")
+		return
+	}
+	path := c.Param("path")
+
+	target := (*a.CacheEndpoints)[clusterID] + path
+
+	//TODO: make this an actual proxy, this is just for testing purposes for now!!
+	req, err := http.NewRequest(http.MethodGet, target, nil)
+	if err != nil {
+		c.String(http.StatusInternalServerError, "")
+		return
+	}
+	for header, values := range c.Request.Header {
+		for _, value := range values {
+			req.Header.Add(header, value)
+		}
+	}
+
+	resp, err := a.httpClient.Do(req)
+	if err != nil {
+		c.String(http.StatusInternalServerError, "")
+		return
+	}
+	defer resp.Body.Close()
+	c.Status(resp.StatusCode)
+	for header, values := range resp.Header {
+		for _, value := range values {
+			c.Writer.Header().Add(header, value)
+		}
+	}
+
+	_, err = io.Copy(c.Writer, resp.Body)
+	if err != nil {
+		c.String(http.StatusInternalServerError, "")
+		return
+	}
 }
