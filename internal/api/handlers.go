@@ -21,16 +21,6 @@ func (a *API) GetStatus(c *gin.Context) {
 }
 
 // TODO: document this function.
-func (a *API) ClusterRegister(c *gin.Context) {
-	c.String(http.StatusOK, "")
-}
-
-// TODO: document this function.
-func (a *API) ClusterDeregister(c *gin.Context) {
-	c.String(http.StatusOK, "")
-}
-
-// TODO: document this function.
 func (a *API) SetClusterStatus(c *gin.Context) {
 	c.String(http.StatusOK, "")
 }
@@ -68,6 +58,7 @@ func (a *API) SetConfig(c *gin.Context) {
 
 // TODO: document this function.
 func (a *API) SetRollout(c *gin.Context) {
+	a.Controller.SendEvent(core.EventRolloutCmd)
 	c.String(http.StatusOK, "")
 }
 

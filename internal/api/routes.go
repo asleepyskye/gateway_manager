@@ -24,8 +24,6 @@ func (a *API) SetupRoutes(router *gin.Engine) {
 	router.GET("/ping", a.Ping)
 	router.GET("/status", a.GetStatus)
 
-	router.POST("/cluster/register", a.ClusterRegister)
-	router.POST("/cluster/deregister", a.ClusterDeregister)
 	router.POST("/cluster/status/:cluster_id", a.SetClusterStatus)
 
 	router.GET("/config", a.GetConfig)

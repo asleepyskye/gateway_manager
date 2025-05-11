@@ -299,6 +299,9 @@ func RolloutState(m *Machine) Event {
 		return EventError
 	}
 
+	//TODO: probably add a safety check here to make sure our shard count hasn't changed?
+	//this might also just need to be implemented elsewhere
+
 	startIndex := 0
 	status, err := m.etcdClient.Get(ctx, "rollout_status")
 	if err != nil {
@@ -331,29 +334,34 @@ func RolloutState(m *Machine) Event {
 		}
 	}
 	if uid == "" {
-		uid := GenerateRandomID()
+		uid = GenerateRandomID()
 		for prevUid == uid {
 			uid = GenerateRandomID() //ensure our uid is not the same, despite very very small odds
 		}
+		m.etcdClient.Put(ctx, "current_rollout_uid", uid)
 	}
 
 	//begin rollout!
 	numReplicas := m.config.NumShards / 16
 	for i := startIndex; i < numReplicas; i++ {
 		m.etcdClient.Put(ctx, "rollout_index", strconv.Itoa(i))
+		slog.Info("[control] rolling out", slog.Int("rollout_index", i), slog.Int("num_replicas", numReplicas))
 
 		oldPod := fmt.Sprintf("pluralkit-gateway-%s-%d", prevUid, i)
 		pod.Name = fmt.Sprintf("pluralkit-gateway-%s-%d", uid, i)
 		if status != "waiting" {
 			_, err := m.k8sClient.CreatePod(&pod)
 			if err != nil {
+				m.etcdClient.Put(ctx, "rollout_status", "error")
 				return EventError
 			}
 		}
 
 		m.etcdClient.Put(ctx, "rollout_status", "waiting")
+		slog.Info("[control] waiting for ready", slog.String("old_pod", oldPod), slog.String("new_pod", pod.Name))
 		err = m.k8sClient.WaitForReady(pod.Name, 8*time.Minute) //TODO: don't hardcode timeout values
 		if err != nil {
+			m.etcdClient.Put(ctx, "rollout_status", "error")
 			return EventError
 		}
 
@@ -361,12 +369,16 @@ func RolloutState(m *Machine) Event {
 
 		err = m.k8sClient.DeletePod(oldPod)
 		if err != nil && !errors.IsNotFound(err) {
+			m.etcdClient.Put(ctx, "rollout_status", "error")
 			return EventError
 		}
 
 		m.etcdClient.Put(ctx, "rollout_status", "running")
 		time.Sleep(50 * time.Millisecond) //sleep a short amount of time, just in case
 	}
+
+	//TODO: wait for last pod to delete before continuing here!
+
 	m.etcdClient.Put(ctx, "rollout_status", "done")
 	return EventHealthy
 }
@@ -427,6 +439,7 @@ func DeployState(m *Machine) Event {
 		time.Sleep(50 * time.Millisecond) //sleep a short amount of time, just in case
 	}
 
+	//TODO: this isn't properly waiting, *sigh*
 	err = m.k8sClient.WaitForReadyAll(numReplicas, 8*time.Minute) //TODO: don't hardcode timeout values
 	if err != nil {
 		return EventError
