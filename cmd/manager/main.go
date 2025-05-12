@@ -72,7 +72,6 @@ func main() {
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.New()
 	router.Use(gin.Recovery())
-	router.Use(gin.Logger())
 	apiInstance := api.NewAPI(etcdCli, controller)
 	apiInstance.SetupRoutes(router)
 

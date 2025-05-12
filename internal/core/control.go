@@ -6,11 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"pluralkit/manager/internal/etcd"
 	"pluralkit/manager/internal/k8s"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -85,15 +87,6 @@ func NewController(etcdCli *etcd.Client, k8sCli *k8s.Client, eventChan chan Even
 		cacheEndpoints: make([]string, 0, 256),
 	}
 
-	ctxGet, cancelGet := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancelGet()
-	val, err := etcdCli.Get(ctxGet, "current_state")
-	if err != nil {
-		slog.Info("[control] current state does not exist in etcd")
-	} else if State(val) != Shutdown {
-		m.currentState = State(val)
-	}
-
 	m.stateFuncs = map[State]StateFunc{
 		Monitor:  MonitorState,
 		Rollout:  RolloutState,
@@ -135,6 +128,16 @@ func NewController(etcdCli *etcd.Client, k8sCli *k8s.Client, eventChan chan Even
 		},
 	}
 
+	ctxGet, cancelGet := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelGet()
+
+	val, err := etcdCli.Get(ctxGet, "current_state")
+	if err != nil {
+		slog.Info("[control] current state does not exist in etcd")
+	} else if State(val) != Shutdown {
+		m.currentState = State(val)
+	}
+
 	val, err = etcdCli.Get(ctxGet, "gateway_config")
 	if err != nil {
 		slog.Info("[control] gateway config does not exist in etcd")
@@ -156,6 +159,18 @@ func NewController(etcdCli *etcd.Client, k8sCli *k8s.Client, eventChan chan Even
 		err = json.Unmarshal([]byte(val), &m.cacheEndpoints)
 		if err != nil {
 			slog.Error("[control] error while parsing cache endpoints!", slog.Any("error", err))
+		}
+	}
+
+	val, err = etcdCli.Get(ctxGet, "num_shards")
+	if err != nil {
+		slog.Info("[control] num shards does not exist in etcd")
+	} else {
+		valInt, err := strconv.Atoi(val)
+		if err != nil {
+			slog.Error("[control] error while parsing num shards!", slog.Any("error", err))
+		} else {
+			m.numShards = valInt
 		}
 	}
 
@@ -327,10 +342,12 @@ func RolloutState(m *Machine) Event {
 		return EventError
 	}
 
-	//TODO: check that we have a healthy deployment first?
+	if m.numShards != m.config.NumShards {
+		slog.Error("[control] shard count in config is different from current deployment!")
+		return EventError
+	}
 
-	//TODO: probably add a safety check here to make sure our shard count hasn't changed?
-	//this might also just need to be implemented elsewhere
+	//TODO: inject shard count here?
 
 	startIndex := 0
 	status, err := m.etcdClient.Get(ctx, "rollout_status")
@@ -371,6 +388,8 @@ func RolloutState(m *Machine) Event {
 		m.etcdClient.Put(ctx, "current_rollout_uid", uid)
 	}
 
+	httpClient := http.Client{}
+
 	//begin rollout!
 	numReplicas := m.config.NumShards / 16
 	oldPod := ""
@@ -393,14 +412,34 @@ func RolloutState(m *Machine) Event {
 
 		m.etcdClient.Put(ctx, "rollout_status", "waiting")
 		slog.Info("[control] waiting for ready", slog.String("old_pod", oldPod), slog.String("new_pod", pod.Name))
-		err = m.k8sClient.WaitForReady(pod.Name, 8*time.Minute) //TODO: don't hardcode timeout values
+		err = m.k8sClient.WaitForReady([]string{pod.Name}, 8*time.Minute) //TODO: don't hardcode timeout values
 		if err != nil {
 			m.etcdClient.Put(ctx, "rollout_status", "error")
 			return EventError
 		}
 
-		//TODO: switch between the pods here
+		target := m.cacheEndpoints[i] + "/runtime_config/event_target"
+		req, _ := http.NewRequest("DELETE", target, nil)
+		resp, err := httpClient.Do(req)
+		if err != nil || resp.StatusCode != 302 {
+			slog.Error("error while deleting old runtime_config!", slog.Any("err", err))
+			m.etcdClient.Put(ctx, "rollout_status", "error")
+			return EventError
+		}
+		resp.Body.Close()
+
 		m.cacheEndpoints[i] = fmt.Sprintf("http://%s.%s:5000", pod.Spec.Hostname, pod.Spec.Subdomain)
+
+		target = m.cacheEndpoints[i] + "/runtime_config/event_target"
+		req, _ = http.NewRequest("POST", target, strings.NewReader("http://pluralkit-dotnet-bot.pluralkit.svc.cluster.local:5002/events")) //TODO: prob don't hardcode this
+		req.Header.Set("Content-Type", "text/plain")
+		resp, err = httpClient.Do(req)
+		if err != nil || resp.StatusCode != 302 {
+			slog.Error("error while setting runtime_config!", slog.Any("err", err))
+			m.etcdClient.Put(ctx, "rollout_status", "error")
+			return EventError
+		}
+		resp.Body.Close()
 
 		//TODO: do this more efficient
 		jsonData, err := json.Marshal(m.cacheEndpoints)
@@ -410,7 +449,12 @@ func RolloutState(m *Machine) Event {
 		m.etcdClient.Put(ctx, "cache_endpoints", string(jsonData))
 
 		err = m.k8sClient.DeletePod(oldPod)
-		if err != nil && !k8sErrors.IsNotFound(err) {
+		if err != nil {
+			m.etcdClient.Put(ctx, "rollout_status", "error")
+			return EventError
+		}
+		err = m.k8sClient.WaitForDeleted([]string{oldPod}, 8*time.Minute)
+		if err != nil {
 			m.etcdClient.Put(ctx, "rollout_status", "error")
 			return EventError
 		}
@@ -418,10 +462,6 @@ func RolloutState(m *Machine) Event {
 		m.etcdClient.Put(ctx, "rollout_status", "running")
 		time.Sleep(50 * time.Millisecond) //sleep a short amount of time, just in case
 	}
-
-	//TODO: wait for last pod to delete before continuing here!
-	//maybe
-	//maybe this should be handled in deletepod?
 
 	m.etcdClient.Put(ctx, "rollout_status", "done")
 	m.etcdClient.Put(ctx, "current_uid", uid)
@@ -457,14 +497,21 @@ func DeployState(m *Machine) Event {
 		},
 	}
 
-	//delete all pods created by the manager in the namespace, if they exist
-	err = m.k8sClient.DeleteAllPods()
+	//delete all pods created by the manager in the namespace, if they exist and wait
+	pods, err := m.k8sClient.GetAllPodsNames()
 	if err != nil {
 		return EventError
 	}
-
-	//TODO: wait for pods to be deleted here
-	time.Sleep(8 * time.Second)
+	if len(pods) > 0 {
+		err = m.k8sClient.DeleteAllPods()
+		if err != nil {
+			return EventError
+		}
+		err = m.k8sClient.WaitForDeleted(pods, 8*time.Minute)
+		if err != nil {
+			return EventError
+		}
+	}
 
 	//make sure the service exists
 	_, err = m.k8sClient.CreateService(service)
@@ -475,6 +522,7 @@ func DeployState(m *Machine) Event {
 	//begin deployment!
 	numReplicas := m.config.NumShards / 16
 	m.cacheEndpoints = make([]string, numReplicas)
+	podNames := make([]string, numReplicas)
 	for i := range numReplicas {
 		pod.Name = fmt.Sprintf("pluralkit-gateway-%s-%d", uid, i)
 		pod.Spec.Hostname = pod.Name
@@ -484,15 +532,28 @@ func DeployState(m *Machine) Event {
 		if err != nil {
 			return EventError
 		}
+		podNames[i] = pod.Name
 
 		m.cacheEndpoints[i] = fmt.Sprintf("http://%s.%s:5000", pod.Spec.Hostname, pod.Spec.Subdomain)
 		time.Sleep(50 * time.Millisecond) //sleep a short amount of time, just in case
 	}
 
-	//TODO: this isn't properly waiting, *sigh*
-	err = m.k8sClient.WaitForReadyAll(numReplicas, 8*time.Minute) //TODO: don't hardcode timeout values
+	err = m.k8sClient.WaitForReady(podNames, 8*time.Minute) //TODO: don't hardcode timeout values
 	if err != nil {
 		return EventError
+	}
+
+	httpClient := http.Client{}
+	for _, val := range m.cacheEndpoints {
+		target := val + "/runtime_config/event_target"
+		req, _ := http.NewRequest("POST", target, strings.NewReader("http://pluralkit-dotnet-bot.pluralkit.svc.cluster.local:5002/events")) //TODO: prob don't hardcode this
+		req.Header.Set("Content-Type", "text/plain")
+		resp, err := httpClient.Do(req)
+		if err != nil || resp.StatusCode != 302 {
+			slog.Error("error while setting runtime_config!", slog.Any("err", err))
+			return EventError
+		}
+		resp.Body.Close()
 	}
 
 	jsonData, err := json.Marshal(m.cacheEndpoints)
@@ -502,6 +563,7 @@ func DeployState(m *Machine) Event {
 	m.etcdClient.Put(context.Background(), "cache_endpoints", string(jsonData))
 
 	m.numShards = m.config.NumShards
+	m.etcdClient.Put(context.Background(), "num_shards", strconv.Itoa(m.numShards))
 	return EventHealthy
 }
 

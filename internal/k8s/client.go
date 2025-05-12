@@ -7,6 +7,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	k8sErrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes"
@@ -43,6 +44,23 @@ func NewClient(namespace string, creatorName string) *Client {
 }
 
 // TODO: document this function.
+func (c *Client) GetAllPodsNames() ([]string, error) {
+	podList, err := c.k8sClient.CoreV1().Pods(c.namespace).List(context.TODO(), metav1.ListOptions{
+		LabelSelector: c.labelSelector,
+	})
+	if err != nil {
+		slog.Error("[k8s] error while getting pod names!", slog.Any("error", err))
+		return make([]string, 0), err
+	}
+
+	podNames := make([]string, len(podList.Items))
+	for i, pod := range podList.Items {
+		podNames[i] = pod.Name
+	}
+	return podNames, nil
+}
+
+// TODO: document this function.
 func (c *Client) GetNumPods() (int, error) {
 	podList, err := c.k8sClient.CoreV1().Pods(c.namespace).List(context.TODO(), metav1.ListOptions{
 		LabelSelector: c.labelSelector,
@@ -52,25 +70,6 @@ func (c *Client) GetNumPods() (int, error) {
 		return 0, err
 	}
 	return len(podList.Items), nil
-}
-
-// TODO: document this function.
-func (c *Client) DeleteAllPods() error {
-	deletePolicy := metav1.DeletePropagationForeground
-	deleteOptions := metav1.DeleteOptions{
-		PropagationPolicy: &deletePolicy,
-	}
-	listOptions := metav1.ListOptions{
-		LabelSelector: c.labelSelector,
-	}
-
-	err := c.k8sClient.CoreV1().Pods(c.namespace).DeleteCollection(context.TODO(), deleteOptions, listOptions)
-	if err != nil {
-		slog.Error("[k8s] error while deleting pods in DeleteAll!", slog.Any("error", err))
-		return err
-	}
-
-	return nil
 }
 
 // TODO: document this function.
@@ -122,57 +121,84 @@ func (c *Client) DeletePod(name string) error {
 }
 
 // TODO: document this function.
-// the more proper way to do this is probably with a watcher?
-func (c *Client) WaitForReadyAll(expected int, timeout time.Duration) error {
-	return wait.PollUntilContextTimeout(context.Background(), 5*time.Second, timeout, false, func(ctx context.Context) (bool, error) {
-		podList, err := c.k8sClient.CoreV1().Pods(c.namespace).List(ctx, metav1.ListOptions{
-			LabelSelector: c.labelSelector,
-		})
-		if err != nil {
-			slog.Warn("[k8s] error while getting pod list in WaitForReadyAll!", slog.Any("error", err))
-			return false, nil //keep polling
-		}
+func (c *Client) DeleteAllPods() error {
+	deletePolicy := metav1.DeletePropagationForeground
+	deleteOptions := metav1.DeleteOptions{
+		PropagationPolicy: &deletePolicy,
+	}
+	listOptions := metav1.ListOptions{
+		LabelSelector: c.labelSelector,
+	}
 
-		numReady := 0
-		for _, pod := range podList.Items {
-			if pod.Status.Phase == "Failed" {
-				return true, errors.New("at least one failed pod")
-			}
-		}
+	err := c.k8sClient.CoreV1().Pods(c.namespace).DeleteCollection(context.TODO(), deleteOptions, listOptions)
+	if err != nil {
+		slog.Error("[k8s] error while deleting pods in DeleteAll!", slog.Any("error", err))
+		return err
+	}
 
-		if numReady == expected {
-			return true, nil
-		}
-		if numReady > expected {
-			return true, errors.New("more pods than expected") //todo: combine these with unified errors for checks
-		}
-		return false, nil //keep polling
-	})
+	return nil
 }
 
 // TODO: document this function.
 // the more proper way to do this is probably with a watcher?
-func (c *Client) WaitForReady(name string, timeout time.Duration) error {
+func (c *Client) WaitForReady(names []string, timeout time.Duration) error {
+	remaining := make(map[string]bool, len(names))
+	for _, v := range names {
+		remaining[v] = false
+	} //seems like this is the best/only way to do this in golang???
+
+	//not the most resource efficient but whatevs
 	return wait.PollUntilContextTimeout(context.Background(), 5*time.Second, timeout, true, func(ctx context.Context) (bool, error) {
-		pod, err := c.k8sClient.CoreV1().Pods(c.namespace).Get(ctx, name, metav1.GetOptions{})
-		if err != nil {
-			slog.Warn("[k8s] error while getting pod in WaitForReady!", slog.Any("error", err))
-			return false, err
-		}
-
-		if pod.Status.Phase == corev1.PodFailed {
-			return true, errors.New("pod failed to start")
-		}
-
-		for _, condition := range pod.Status.Conditions {
-			if condition.Type == "DisruptionTarget" && condition.Status == "True" {
-				return true, errors.New("pod disrupted")
+		for name := range remaining {
+			pod, err := c.k8sClient.CoreV1().Pods(c.namespace).Get(ctx, name, metav1.GetOptions{})
+			if err != nil {
+				slog.Error("[k8s] error while getting pod in WaitForReady!", slog.Any("error", err))
+				return true, err
 			}
-			if condition.Type == "Ready" && condition.Status == "True" {
-				return true, nil
+
+			if pod.Status.Phase == corev1.PodFailed {
+				return true, errors.New("pod failed to start")
+			}
+
+			for _, condition := range pod.Status.Conditions {
+				if condition.Type == "DisruptionTarget" && condition.Status == "True" {
+					return true, errors.New("pod disrupted")
+				}
+				if condition.Type == "Ready" && condition.Status == "True" {
+					delete(remaining, name)
+					continue
+				}
 			}
 		}
+		if len(remaining) == 0 {
+			return true, nil
+		}
+		return false, nil
+	})
+}
 
+func (c *Client) WaitForDeleted(names []string, timeout time.Duration) error {
+	if len(names) == 0 {
+		return nil
+	}
+	remaining := make(map[string]bool, len(names))
+	for _, v := range names {
+		remaining[v] = false
+	} //seems like this is the best/only way to do this in golang???
+
+	return wait.PollUntilContextTimeout(context.Background(), 5*time.Second, timeout, true, func(ctx context.Context) (bool, error) {
+		for name := range remaining {
+			_, err := c.k8sClient.CoreV1().Pods(c.namespace).Get(ctx, name, metav1.GetOptions{})
+			if k8sErrors.IsNotFound(err) {
+				delete(remaining, name)
+			} else if err != nil {
+				slog.Error("[k8s] error while getting pod in WaitForDeleted!", slog.Any("error", err))
+				return true, err
+			}
+		}
+		if len(remaining) == 0 {
+			return true, nil
+		}
 		return false, nil
 	})
 }
