@@ -18,17 +18,13 @@ import (
 	"pluralkit/manager/internal/k8s"
 )
 
-type config struct {
-	EtcdAddr string `env:"pluralkit__manager__etcd_addr"`
-	BindAddr string `env:"pluralkit__manager__addr"`
-}
-
 func main() {
 	//load config from envs
-	var cfg config
+	var cfg core.ManagerConfig
 	err := env.Parse(&cfg)
 	if err != nil {
 		slog.Error("error while loading envs!", slog.Any("error", err))
+		os.Exit(1)
 	}
 
 	//seed rand
@@ -52,14 +48,14 @@ func main() {
 
 	//k8s client
 	slog.Info("setting up k8s client")
-	k8sCli := k8s.NewClient("pluralkit-gateway", "pluralkit-gateway_manager") //prob add an env for namespace and label selectors?
+	k8sCli := k8s.NewClient(cfg.ManagerNamespace, "pluralkit-gateway_manager") //prob add an env for namespace and label selectors?
 	if k8sCli == nil {
 		os.Exit(1)
 	}
 
 	//state machine
 	slog.Info("setting up control FSM")
-	controller := core.NewController(etcdCli, k8sCli, eventChannel)
+	controller := core.NewController(etcdCli, k8sCli, eventChannel, cfg)
 
 	slog.Info("starting control FSM")
 	wg.Add(1)
@@ -72,7 +68,7 @@ func main() {
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.New()
 	router.Use(gin.Recovery())
-	apiInstance := api.NewAPI(etcdCli, controller)
+	apiInstance := api.NewAPI(etcdCli, controller, cfg)
 	apiInstance.SetupRoutes(router)
 
 	slog.Info("starting http api on", slog.String("address", cfg.BindAddr))

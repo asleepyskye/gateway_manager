@@ -1,10 +1,12 @@
 package api
 
 import (
+	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 
@@ -18,11 +20,32 @@ func (a *API) Ping(c *gin.Context) {
 
 // TODO: document this function.
 func (a *API) GetStatus(c *gin.Context) {
-	c.String(http.StatusOK, "")
+	shards := a.Controller.GetShardStatus()
+	val, err := json.Marshal(shards)
+	if err != nil {
+		c.String(http.StatusInternalServerError, "error while marshalling shard status")
+		slog.Warn("[api] error while marshalling status", slog.Any("error", err))
+		return
+	}
+	c.Data(http.StatusOK, "application/json", val)
 }
 
 // TODO: document this function.
-func (a *API) SetClusterStatus(c *gin.Context) {
+func (a *API) SetShardStatus(c *gin.Context) {
+	var state core.ShardState
+	data, err := io.ReadAll(c.Request.Body)
+	if err != nil {
+		c.String(http.StatusInternalServerError, "error while reading request body")
+		slog.Warn("[api] error while reading request body in SetClusterStatus", slog.Any("error", err))
+		return
+	}
+	err = json.Unmarshal(data, &state)
+	if err != nil {
+		c.String(http.StatusBadRequest, "error while parsing status")
+		slog.Warn("[api] error while parsing cluster status", slog.Any("error", err))
+		return
+	}
+	a.Controller.UpdateShardStatus(state)
 	c.String(http.StatusOK, "")
 }
 
@@ -69,17 +92,20 @@ func (a *API) SetDeploy(c *gin.Context) {
 	c.String(http.StatusOK, "")
 }
 
+// TODO: document this function.
 func (a *API) GetCache(c *gin.Context) {
-	clusterID, err := strconv.Atoi(c.Param("id"))
+	guildID, err := strconv.Atoi(c.Param("id"))
 	if err != nil {
 		c.String(http.StatusInternalServerError, "")
 		return
 	}
-	path := c.Param("path")
+	path := "/guilds/" + strconv.Itoa(guildID) + strings.TrimRight(c.Param("path"), "/")
+
+	shardID := (guildID >> 22) % *a.NumShards
+	clusterID := shardID / a.Config.MaxConcurrency
 
 	target := (*a.CacheEndpoints)[clusterID] + path
 
-	//TODO: make this an actual proxy, this is just for testing purposes for now!!
 	req, err := http.NewRequest(http.MethodGet, target, nil)
 	if err != nil {
 		c.String(http.StatusInternalServerError, "")

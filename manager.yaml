@@ -67,6 +67,8 @@ spec:
       value: 'pk-db.den.vixen.lgbt:2379'
     - name: pluralkit__manager__addr
       value: '0.0.0.0:5020'
+    - name: pluralkit__discord__max_concurrency
+      value: '16'
     ports:
     - containerPort: 5020
 ---

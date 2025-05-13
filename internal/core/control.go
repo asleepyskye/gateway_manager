@@ -65,21 +65,24 @@ type Machine struct {
 	transitions  map[State]map[Event]State
 	sigChannel   chan os.Signal
 	eventChannel chan Event
+	config       ManagerConfig
 
 	etcdClient     *etcd.Client
 	k8sClient      *k8s.Client
-	config         GatewayConfig
+	gwConfig       GatewayConfig
 	cacheEndpoints []string
 	numShards      int
+	shardStatus    []ShardState
 }
 
 // TODO: document this function.
-func NewController(etcdCli *etcd.Client, k8sCli *k8s.Client, eventChan chan Event) *Machine {
+func NewController(etcdCli *etcd.Client, k8sCli *k8s.Client, eventChan chan Event, cfg ManagerConfig) *Machine {
 	m := &Machine{
 		currentState: Monitor,
 		stateFuncs:   make(map[State]StateFunc),
 		transitions:  make(map[State]map[Event]State),
 		sigChannel:   make(chan os.Signal, 1),
+		config:       cfg,
 
 		eventChannel:   eventChan,
 		etcdClient:     etcdCli,
@@ -141,14 +144,14 @@ func NewController(etcdCli *etcd.Client, k8sCli *k8s.Client, eventChan chan Even
 	val, err = etcdCli.Get(ctxGet, "gateway_config")
 	if err != nil {
 		slog.Info("[control] gateway config does not exist in etcd")
-		m.config = GatewayConfig{}
+		m.gwConfig = GatewayConfig{}
 	} else {
 		var config GatewayConfig
 		err = json.Unmarshal([]byte(val), &config)
 		if err != nil {
 			slog.Error("[control] error while parsing config! ", slog.Any("error", err))
 		} else {
-			m.config = config
+			m.gwConfig = config
 		}
 	}
 
@@ -171,6 +174,7 @@ func NewController(etcdCli *etcd.Client, k8sCli *k8s.Client, eventChan chan Even
 			slog.Error("[control] error while parsing num shards!", slog.Any("error", err))
 		} else {
 			m.numShards = valInt
+			m.shardStatus = make([]ShardState, m.numShards)
 		}
 	}
 
@@ -198,7 +202,7 @@ func (m *Machine) SetConfig(configStr []byte) error {
 		return err
 	}
 
-	m.config = config
+	m.gwConfig = config
 
 	err = m.etcdClient.Put(context.Background(), "gateway_config", string(configStr))
 	if err != nil {
@@ -226,6 +230,14 @@ func (m *Machine) GetCacheEndpoints() *([]string) {
 // TODO: document this function.
 func (m *Machine) GetNumShards() *(int) {
 	return &m.numShards
+}
+
+func (m *Machine) GetShardStatus() []ShardState {
+	return m.shardStatus
+}
+
+func (m *Machine) UpdateShardStatus(status ShardState) {
+	m.shardStatus[status.ShardID] = status
 }
 
 // TODO: document this function.
@@ -302,32 +314,28 @@ func (m *Machine) Run(wg *sync.WaitGroup) {
 
 // TODO: document this function.
 func MonitorState(m *Machine) Event {
-	//TODO: check health here
-	//loop here, just make sure to exit if a new event is recieved
-	//(or sigterm)
-	//we should also probably check if a gateway instance isn't healthy because of an issue on discord's end here
+	ticker := time.NewTicker(m.config.MonitorPeriod)
+	defer ticker.Stop()
+
 	for {
-		//is there some better way to time this so we still get events?
 		select {
 		case sig := <-m.sigChannel:
 			slog.Warn("[state] os signal recieved while monitoring!", slog.String("signal", sig.String()))
 			return EventSigterm
 		case cmd := <-m.eventChannel:
 			return cmd
-		default:
-		}
 
-		slog.Debug("[control] checking cluster health")
+		case <-ticker.C:
+			slog.Debug("[control] checking cluster health")
 
-		//first check that we have a config
-		if m.config.NumShards != 0 && m.config.PodDefinition != nil {
-			ev, _ := RunChecks(m)
-			if !ev {
-				return EventNotHealthy
+			//first check that we have a config
+			if m.gwConfig.NumShards != 0 && m.gwConfig.PodDefinition != nil {
+				ev, _ := RunChecks(m)
+				if !ev {
+					return EventNotHealthy
+				}
 			}
 		}
-
-		time.Sleep(10 * time.Second) //TODO: don't hardcode this
 	}
 }
 
@@ -336,13 +344,13 @@ func RolloutState(m *Machine) Event {
 	//should also check for sigterm here, but if we get a sigterm here, that could be problematic?
 	ctx := context.Background()
 	var pod corev1.Pod
-	err := json.Unmarshal(m.config.PodDefinition, &pod)
+	err := json.Unmarshal(m.gwConfig.PodDefinition, &pod)
 	if err != nil {
 		slog.Error("[control] error while parsing config!", slog.Any("error", err))
 		return EventError
 	}
 
-	if m.numShards != m.config.NumShards {
+	if m.numShards != m.gwConfig.NumShards {
 		slog.Error("[control] shard count in config is different from current deployment!")
 		return EventError
 	}
@@ -391,7 +399,7 @@ func RolloutState(m *Machine) Event {
 	httpClient := http.Client{}
 
 	//begin rollout!
-	numReplicas := m.config.NumShards / 16
+	numReplicas := m.gwConfig.NumShards / m.config.MaxConcurrency
 	oldPod := ""
 	for i := startIndex; i < numReplicas; i++ {
 		m.etcdClient.Put(ctx, "rollout_index", strconv.Itoa(i))
@@ -412,7 +420,7 @@ func RolloutState(m *Machine) Event {
 
 		m.etcdClient.Put(ctx, "rollout_status", "waiting")
 		slog.Info("[control] waiting for ready", slog.String("old_pod", oldPod), slog.String("new_pod", pod.Name))
-		err = m.k8sClient.WaitForReady([]string{pod.Name}, 8*time.Minute) //TODO: don't hardcode timeout values
+		err = m.k8sClient.WaitForReady([]string{pod.Name}, m.config.EventWaitTimeout)
 		if err != nil {
 			m.etcdClient.Put(ctx, "rollout_status", "error")
 			return EventError
@@ -431,7 +439,7 @@ func RolloutState(m *Machine) Event {
 		m.cacheEndpoints[i] = fmt.Sprintf("http://%s.%s:5000", pod.Spec.Hostname, pod.Spec.Subdomain)
 
 		target = m.cacheEndpoints[i] + "/runtime_config/event_target"
-		req, _ = http.NewRequest("POST", target, strings.NewReader("http://pluralkit-dotnet-bot.pluralkit.svc.cluster.local:5002/events")) //TODO: prob don't hardcode this
+		req, _ = http.NewRequest("POST", target, strings.NewReader(m.config.EventTarget))
 		req.Header.Set("Content-Type", "text/plain")
 		resp, err = httpClient.Do(req)
 		if err != nil || resp.StatusCode != 302 {
@@ -471,7 +479,7 @@ func RolloutState(m *Machine) Event {
 // TODO: document this function.
 func DeployState(m *Machine) Event {
 	var pod corev1.Pod
-	err := json.Unmarshal(m.config.PodDefinition, &pod)
+	err := json.Unmarshal(m.gwConfig.PodDefinition, &pod)
 	if err != nil {
 		slog.Error("[control] error while parsing config!", slog.Any("error", err))
 		return EventError
@@ -520,7 +528,8 @@ func DeployState(m *Machine) Event {
 	}
 
 	//begin deployment!
-	numReplicas := m.config.NumShards / 16
+	numReplicas := m.gwConfig.NumShards / m.config.MaxConcurrency
+	m.shardStatus = make([]ShardState, m.gwConfig.NumShards)
 	m.cacheEndpoints = make([]string, numReplicas)
 	podNames := make([]string, numReplicas)
 	for i := range numReplicas {
@@ -538,7 +547,7 @@ func DeployState(m *Machine) Event {
 		time.Sleep(50 * time.Millisecond) //sleep a short amount of time, just in case
 	}
 
-	err = m.k8sClient.WaitForReady(podNames, 8*time.Minute) //TODO: don't hardcode timeout values
+	err = m.k8sClient.WaitForReady(podNames, m.config.EventWaitTimeout)
 	if err != nil {
 		return EventError
 	}
@@ -546,7 +555,7 @@ func DeployState(m *Machine) Event {
 	httpClient := http.Client{}
 	for _, val := range m.cacheEndpoints {
 		target := val + "/runtime_config/event_target"
-		req, _ := http.NewRequest("POST", target, strings.NewReader("http://pluralkit-dotnet-bot.pluralkit.svc.cluster.local:5002/events")) //TODO: prob don't hardcode this
+		req, _ := http.NewRequest("POST", target, strings.NewReader(m.config.EventTarget))
 		req.Header.Set("Content-Type", "text/plain")
 		resp, err := httpClient.Do(req)
 		if err != nil || resp.StatusCode != 302 {
@@ -562,7 +571,7 @@ func DeployState(m *Machine) Event {
 	}
 	m.etcdClient.Put(context.Background(), "cache_endpoints", string(jsonData))
 
-	m.numShards = m.config.NumShards
+	m.numShards = m.gwConfig.NumShards
 	m.etcdClient.Put(context.Background(), "num_shards", strconv.Itoa(m.numShards))
 	return EventHealthy
 }

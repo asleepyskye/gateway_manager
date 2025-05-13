@@ -8,21 +8,25 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// TODO: document this struct.
 type API struct {
 	EtcdClient     *etcd.Client
 	Controller     *core.Machine
 	CacheEndpoints *[]string
 	NumShards      *int
 	httpClient     http.Client
+	Config         core.ManagerConfig
 }
 
-func NewAPI(etcdCli *etcd.Client, controller *core.Machine) *API {
+// TODO: document this function.
+func NewAPI(etcdCli *etcd.Client, controller *core.Machine, config core.ManagerConfig) *API {
 	return &API{
 		EtcdClient:     etcdCli,
 		Controller:     controller,
 		CacheEndpoints: controller.GetCacheEndpoints(),
 		NumShards:      controller.GetNumShards(),
 		httpClient:     http.Client{},
+		Config:         config,
 	}
 }
 
@@ -31,12 +35,12 @@ func (a *API) SetupRoutes(router *gin.Engine) {
 	router.GET("/ping", a.Ping)
 	router.GET("/status", a.GetStatus)
 
-	router.POST("/cluster/status/:cluster_id", a.SetClusterStatus)
+	router.POST("/cluster/status/:cluster_id", a.SetShardStatus)
 
 	router.GET("/config", a.GetConfig)
 	router.POST("/actions/config", a.SetConfig)
 	router.POST("/actions/rollout", a.SetRollout)
 	router.POST("/actions/deploy", a.SetDeploy)
 
-	router.GET("/cache/:id/*path", a.GetCache)
+	router.GET("/cache/guilds/:id/*path", a.GetCache)
 }

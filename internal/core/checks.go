@@ -10,13 +10,9 @@ const (
 func CheckNumPods(m *Machine) bool {
 	numPods, err := m.k8sClient.GetNumPods()
 	if err != nil {
-		//well this is bad...
-		//how do we handle this properly?
-		//perhaps we implement retries into the client?
-		//for now just continue and hope for the best
-		return true
+		return false
 	}
-	if numPods != (m.config.NumShards / 16) { //maybe don't hardcode this
+	if numPods != (m.gwConfig.NumShards / 16) { //maybe don't hardcode this
 		return false
 	}
 	return true
