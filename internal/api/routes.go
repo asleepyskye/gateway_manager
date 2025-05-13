@@ -35,7 +35,7 @@ func (a *API) SetupRoutes(router *gin.Engine) {
 	router.GET("/ping", a.Ping)
 	router.GET("/status", a.GetStatus)
 
-	router.POST("/cluster/status/:cluster_id", a.SetShardStatus)
+	router.POST("/shard/status", a.SetShardStatus)
 
 	router.GET("/config", a.GetConfig)
 	router.POST("/actions/config", a.SetConfig)

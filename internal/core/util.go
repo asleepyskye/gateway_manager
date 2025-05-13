@@ -19,13 +19,13 @@ type ManagerConfig struct {
 }
 
 type ShardState struct {
-	ShardID            int32
-	Up                 bool
-	DisconnectionCount int32
-	Latency            int32
-	LastHeartbeat      int32
-	LastConnection     int32
-	ClusterID          int32
+	ShardID            int32 `json:"shard_id"`
+	Up                 bool  `json:"up"`
+	DisconnectionCount int32 `json:"disconnection_count"`
+	Latency            int32 `json:"latency"`
+	LastHeartbeat      int32 `json:"last_heartbeat"`
+	LastConnection     int32 `json:"last_connection"`
+	ClusterID          int32 `json:"cluster_id"`
 }
 
 const alphanumeric = "abcdefghijklmnopqrstuvwxyz0123456789"
