@@ -342,8 +342,9 @@ func MonitorState(m *Machine) Event {
 
 			//first check that we have a config
 			if m.gwConfig.NumShards != 0 && m.gwConfig.PodDefinition != nil {
-				ev, _ := RunChecks(m)
+				ev, failures := RunChecks(m)
 				if !ev {
+					m.logger.Error("failed one or more health checks!", slog.Any("failures", failures))
 					return EventNotHealthy
 				}
 			}
@@ -351,10 +352,32 @@ func MonitorState(m *Machine) Event {
 	}
 }
 
+// TODO: document this function
+func changeEventTarget(client http.Client, url string, eventTarget string) error {
+	target := url + "/runtime_config/event_target"
+	var req *http.Request
+	if len(eventTarget) == 0 {
+		req, _ = http.NewRequest("POST", target, strings.NewReader(eventTarget))
+	} else {
+		req, _ = http.NewRequest("DELETE", target, nil)
+	}
+	req.Header.Set("Content-Type", "text/plain")
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	} else if resp.StatusCode != 302 {
+		return errors.New("status code not 302")
+	}
+	resp.Body.Close()
+	return nil
+}
+
 // TODO: document this function.
 func RolloutState(m *Machine) Event {
 	//should also check for sigterm here, but if we get a sigterm here, that could be problematic?
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	var pod corev1.Pod
 	err := json.Unmarshal(m.gwConfig.PodDefinition, &pod)
 	if err != nil {
@@ -432,34 +455,29 @@ func RolloutState(m *Machine) Event {
 
 		m.etcdClient.Put(ctx, "rollout_status", "waiting")
 		m.logger.Info("waiting for ready", slog.String("old_pod", oldPod), slog.String("new_pod", pod.Name))
-		err = m.k8sClient.WaitForReady([]string{pod.Name}, m.config.EventWaitTimeout)
+		err = m.k8sClient.WaitForReady(ctx, []string{pod.Name}, m.config.EventWaitTimeout)
 		if err != nil {
 			m.etcdClient.Put(ctx, "rollout_status", "error")
 			return EventError
 		}
 
 		target := m.cacheEndpoints[i] + "/runtime_config/event_target"
-		req, _ := http.NewRequest("DELETE", target, nil)
-		resp, err := httpClient.Do(req)
-		if err != nil || resp.StatusCode != 302 {
+		err = changeEventTarget(httpClient, target, "")
+		if err != nil {
 			m.logger.Error("error while deleting old runtime_config!", slog.Any("err", err))
 			m.etcdClient.Put(ctx, "rollout_status", "error")
-			return EventError
+			return EventError //TODO: should we return error here??
 		}
-		resp.Body.Close()
 
 		m.cacheEndpoints[i] = fmt.Sprintf("http://%s.%s:5000", pod.Spec.Hostname, pod.Spec.Subdomain)
 
 		target = m.cacheEndpoints[i] + "/runtime_config/event_target"
-		req, _ = http.NewRequest("POST", target, strings.NewReader(m.config.EventTarget))
-		req.Header.Set("Content-Type", "text/plain")
-		resp, err = httpClient.Do(req)
-		if err != nil || resp.StatusCode != 302 {
+		err = changeEventTarget(httpClient, target, m.config.EventTarget)
+		if err != nil {
 			m.logger.Error("error while setting runtime_config!", slog.Any("err", err))
 			m.etcdClient.Put(ctx, "rollout_status", "error")
 			return EventError
 		}
-		resp.Body.Close()
 
 		//TODO: do this more efficient
 		jsonData, err := json.Marshal(m.cacheEndpoints)
@@ -473,7 +491,7 @@ func RolloutState(m *Machine) Event {
 			m.etcdClient.Put(ctx, "rollout_status", "error")
 			return EventError
 		}
-		err = m.k8sClient.WaitForDeleted([]string{oldPod}, 8*time.Minute)
+		err = m.k8sClient.WaitForDeleted(ctx, []string{oldPod}, m.config.EventWaitTimeout)
 		if err != nil {
 			m.etcdClient.Put(ctx, "rollout_status", "error")
 			return EventError
@@ -490,6 +508,9 @@ func RolloutState(m *Machine) Event {
 
 // TODO: document this function.
 func DeployState(m *Machine) Event {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	var pod corev1.Pod
 	err := json.Unmarshal(m.gwConfig.PodDefinition, &pod)
 	if err != nil {
@@ -497,7 +518,7 @@ func DeployState(m *Machine) Event {
 		return EventError
 	}
 	uid := GenerateRandomID()
-	m.etcdClient.Put(context.Background(), "current_uid", uid)
+	m.etcdClient.Put(ctx, "current_uid", uid)
 
 	service := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
@@ -527,7 +548,7 @@ func DeployState(m *Machine) Event {
 		if err != nil {
 			return EventError
 		}
-		err = m.k8sClient.WaitForDeleted(pods, 8*time.Minute)
+		err = m.k8sClient.WaitForDeleted(ctx, pods, m.config.EventWaitTimeout)
 		if err != nil {
 			return EventError
 		}
@@ -559,7 +580,7 @@ func DeployState(m *Machine) Event {
 		time.Sleep(50 * time.Millisecond) //sleep a short amount of time, just in case
 	}
 
-	err = m.k8sClient.WaitForReady(podNames, m.config.EventWaitTimeout)
+	err = m.k8sClient.WaitForReady(ctx, podNames, m.config.EventWaitTimeout)
 	if err != nil {
 		return EventError
 	}
@@ -567,32 +588,54 @@ func DeployState(m *Machine) Event {
 	httpClient := http.Client{}
 	for _, val := range m.cacheEndpoints {
 		target := val + "/runtime_config/event_target"
-		req, _ := http.NewRequest("POST", target, strings.NewReader(m.config.EventTarget))
-		req.Header.Set("Content-Type", "text/plain")
-		resp, err := httpClient.Do(req)
-		if err != nil || resp.StatusCode != 302 {
+		err = changeEventTarget(httpClient, target, m.config.EventTarget)
+		if err != nil {
 			m.logger.Error("error while setting runtime_config!", slog.Any("err", err))
 			return EventError
 		}
-		resp.Body.Close()
 	}
 
 	jsonData, err := json.Marshal(m.cacheEndpoints)
 	if err != nil {
 		m.logger.Warn("error while marshalling cache endpoints!", slog.Any("err", err))
 	}
-	m.etcdClient.Put(context.Background(), "cache_endpoints", string(jsonData))
+	m.etcdClient.Put(ctx, "cache_endpoints", string(jsonData))
 
 	m.numShards = m.gwConfig.NumShards
-	m.etcdClient.Put(context.Background(), "num_shards", strconv.Itoa(m.numShards))
+	m.etcdClient.Put(ctx, "num_shards", strconv.Itoa(m.numShards))
 	return EventHealthy
 }
 
 // TODO: document this function.
 func DegradedState(m *Machine) Event {
 	//just for now...
-	time.Sleep(10 * time.Second)
-	return EventHealthy
+	ticker := time.NewTicker(m.config.MonitorPeriod)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case sig := <-m.sigChannel:
+			m.logger.Warn("os signal recieved while degraded!", slog.String("signal", sig.String()))
+			return EventSigterm
+		case cmd := <-m.eventChannel:
+			return cmd
+
+		case <-ticker.C:
+			m.logger.Debug("checking cluster health")
+
+			//first check that we have a config
+			if m.gwConfig.NumShards != 0 && m.gwConfig.PodDefinition != nil {
+				ev, failures := RunChecks(m)
+				if !ev {
+					m.logger.Warn("failed one or more health checks!", slog.Any("failures", failures))
+					//TODO: determine how we get gateway healthy again based on the failed checks
+					continue
+				} else {
+					return EventHealthy
+				}
+			}
+		}
+	}
 
 	//maybe add a 'repair' state that does what deploy does, but for not-healthy pods?
 }

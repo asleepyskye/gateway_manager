@@ -32,14 +32,14 @@ type ManagerConfig struct {
 
 	//times should be formatted to parse with time.ParseDuration
 	EventWaitTimeout time.Duration `env:"pluralkit__manager__event_wait_timeout" envDefault:"8m"`
-	MonitorPeriod    time.Duration `env:"pluralkit__manager__monitor_period" envDefault:"10s"`
+	MonitorPeriod    time.Duration `env:"pluralkit__manager__monitor_period" envDefault:"30s"`
 
 	EventTarget      string `env:"pluralkit__manager__event_target_format" envDefault:"http://pluralkit-dotnet-bot.pluralkit.svc.cluster.local:5002/events"`
 	ManagerNamespace string `env:"pluralkit__manager__namespace" envDefault:"pluralkit-gateway"`
 
 	SentryURL      string    `env:"pluralkit__sentry_url"`
 	LogLevel       SlogLevel `env:"pluralkit__consoleloglevel" envDefault:"debug"`
-	SentryLogLevel SlogLevel `env:"pluralkit__sentryloglevel" envDefault:"error"`
+	SentryLogLevel SlogLevel `env:"pluralkit__sentryloglevel" envDefault:"info"`
 }
 
 type ShardState struct {

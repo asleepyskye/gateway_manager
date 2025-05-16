@@ -133,14 +133,14 @@ func (c *Client) DeleteAllPods() error {
 
 // TODO: document this function.
 // the more proper way to do this is probably with a watcher?
-func (c *Client) WaitForReady(names []string, timeout time.Duration) error {
+func (c *Client) WaitForReady(ctx context.Context, names []string, timeout time.Duration) error {
 	remaining := make(map[string]bool, len(names))
 	for _, v := range names {
 		remaining[v] = false
 	} //seems like this is the best/only way to do this in golang???
 
 	//not the most resource efficient but whatevs
-	return wait.PollUntilContextTimeout(context.Background(), 5*time.Second, timeout, true, func(ctx context.Context) (bool, error) {
+	return wait.PollUntilContextTimeout(ctx, 5*time.Second, timeout, true, func(ctx context.Context) (bool, error) {
 		for name := range remaining {
 			pod, err := c.k8sClient.CoreV1().Pods(c.namespace).Get(ctx, name, metav1.GetOptions{})
 			if err != nil {
@@ -168,7 +168,7 @@ func (c *Client) WaitForReady(names []string, timeout time.Duration) error {
 	})
 }
 
-func (c *Client) WaitForDeleted(names []string, timeout time.Duration) error {
+func (c *Client) WaitForDeleted(ctx context.Context, names []string, timeout time.Duration) error {
 	if len(names) == 0 {
 		return nil
 	}
@@ -177,7 +177,7 @@ func (c *Client) WaitForDeleted(names []string, timeout time.Duration) error {
 		remaining[v] = false
 	} //seems like this is the best/only way to do this in golang???
 
-	return wait.PollUntilContextTimeout(context.Background(), 5*time.Second, timeout, true, func(ctx context.Context) (bool, error) {
+	return wait.PollUntilContextTimeout(ctx, 5*time.Second, timeout, true, func(ctx context.Context) (bool, error) {
 		for name := range remaining {
 			_, err := c.k8sClient.CoreV1().Pods(c.namespace).Get(ctx, name, metav1.GetOptions{})
 			if k8sErrors.IsNotFound(err) {
