@@ -12,7 +12,7 @@ func CheckNumPods(m *Machine) bool {
 	if err != nil {
 		return false
 	}
-	if numPods != (m.gwConfig.NumShards / 16) { //maybe don't hardcode this
+	if numPods != (m.gwConfig.NumShards / m.config.MaxConcurrency) {
 		return false
 	}
 	return true

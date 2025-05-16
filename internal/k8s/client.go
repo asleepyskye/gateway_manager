@@ -3,7 +3,6 @@ package k8s
 import (
 	"context"
 	"errors"
-	"log/slog"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -22,15 +21,14 @@ type Client struct {
 }
 
 // TODO: document this function.
-func NewClient(namespace string, creatorName string) *Client {
+func NewClient(namespace string, creatorName string) (*Client, error) {
 	config, err := rest.InClusterConfig()
 	if err != nil {
-		slog.Error("[k8s] error while setting up k8s client config!", slog.Any("error", err))
-		return nil
+		return nil, err
 	}
 	clientset, err := kubernetes.NewForConfig(config)
 	if err != nil {
-		slog.Error("[k8s] error while setting up k8s clientset!", slog.Any("error", err))
+		return nil, err
 	}
 
 	selector := "created-by=" + creatorName
@@ -40,7 +38,7 @@ func NewClient(namespace string, creatorName string) *Client {
 		namespace:     namespace,
 		creatorName:   creatorName,
 		labelSelector: selector,
-	}
+	}, nil
 }
 
 // TODO: document this function.
@@ -49,7 +47,6 @@ func (c *Client) GetAllPodsNames() ([]string, error) {
 		LabelSelector: c.labelSelector,
 	})
 	if err != nil {
-		slog.Error("[k8s] error while getting pod names!", slog.Any("error", err))
 		return make([]string, 0), err
 	}
 
@@ -66,7 +63,6 @@ func (c *Client) GetNumPods() (int, error) {
 		LabelSelector: c.labelSelector,
 	})
 	if err != nil {
-		slog.Error("[k8s] error while getting num pods!", slog.Any("error", err))
 		return 0, err
 	}
 	return len(podList.Items), nil
@@ -82,7 +78,6 @@ func (c *Client) CreateService(service *corev1.Service) (*corev1.Service, error)
 
 	createdService, err := c.k8sClient.CoreV1().Services(c.namespace).Create(context.TODO(), service, metav1.CreateOptions{})
 	if err != nil {
-		slog.Warn("[k8s] error while creating service!", slog.Any("error", err))
 		return nil, err
 	}
 	return createdService, nil
@@ -98,7 +93,6 @@ func (c *Client) CreatePod(pod *corev1.Pod) (*corev1.Pod, error) {
 
 	createdPod, err := c.k8sClient.CoreV1().Pods(c.namespace).Create(context.TODO(), pod, metav1.CreateOptions{})
 	if err != nil {
-		slog.Warn("[k8s] error while creating pod!", slog.Any("error", err))
 		return nil, err
 	}
 	return createdPod, nil
@@ -109,11 +103,10 @@ func (c *Client) DeletePod(name string) error {
 	deletePolicy := metav1.DeletePropagationForeground
 	deleteOptions := metav1.DeleteOptions{
 		PropagationPolicy: &deletePolicy,
-	} //TODO: maybe don't hardcode this
+	}
 
 	err := c.k8sClient.CoreV1().Pods(c.namespace).Delete(context.TODO(), name, deleteOptions)
 	if err != nil {
-		slog.Error("[k8s] error while deleting pod!", slog.Any("error", err))
 		return err
 	}
 
@@ -132,7 +125,6 @@ func (c *Client) DeleteAllPods() error {
 
 	err := c.k8sClient.CoreV1().Pods(c.namespace).DeleteCollection(context.TODO(), deleteOptions, listOptions)
 	if err != nil {
-		slog.Error("[k8s] error while deleting pods in DeleteAll!", slog.Any("error", err))
 		return err
 	}
 
@@ -152,7 +144,6 @@ func (c *Client) WaitForReady(names []string, timeout time.Duration) error {
 		for name := range remaining {
 			pod, err := c.k8sClient.CoreV1().Pods(c.namespace).Get(ctx, name, metav1.GetOptions{})
 			if err != nil {
-				slog.Error("[k8s] error while getting pod in WaitForReady!", slog.Any("error", err))
 				return true, err
 			}
 
@@ -192,7 +183,6 @@ func (c *Client) WaitForDeleted(names []string, timeout time.Duration) error {
 			if k8sErrors.IsNotFound(err) {
 				delete(remaining, name)
 			} else if err != nil {
-				slog.Error("[k8s] error while getting pod in WaitForDeleted!", slog.Any("error", err))
 				return true, err
 			}
 		}

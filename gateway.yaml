@@ -38,7 +38,7 @@ spec:
         - name: pluralkit__sentry_url
           valueFrom:
             secretKeyRef:
-              name: dotnet-bot-sentry-url
+              name: sentry-url
               key: credential
         - name: pluralkit__discord__cluster__total_shards
           valueFrom:
@@ -53,3 +53,5 @@ spec:
           valueFrom:
             fieldRef:
               fieldPath: metadata.name
+        - name: pluralkit__manager_url
+          value: 'pluralkit-manager:5020'

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"log/slog"
 	"net/http"
 	"pluralkit/manager/internal/core"
 	"pluralkit/manager/internal/etcd"
@@ -16,10 +17,12 @@ type API struct {
 	NumShards      *int
 	httpClient     http.Client
 	Config         core.ManagerConfig
+	Logger         *slog.Logger
 }
 
 // TODO: document this function.
-func NewAPI(etcdCli *etcd.Client, controller *core.Machine, config core.ManagerConfig) *API {
+func NewAPI(etcdCli *etcd.Client, controller *core.Machine, config core.ManagerConfig, logger *slog.Logger) *API {
+	moduleLogger := logger.With(slog.String("module", "API"))
 	return &API{
 		EtcdClient:     etcdCli,
 		Controller:     controller,
@@ -27,6 +30,7 @@ func NewAPI(etcdCli *etcd.Client, controller *core.Machine, config core.ManagerC
 		NumShards:      controller.GetNumShards(),
 		httpClient:     http.Client{},
 		Config:         config,
+		Logger:         moduleLogger,
 	}
 }
 
@@ -35,7 +39,7 @@ func (a *API) SetupRoutes(router *gin.Engine) {
 	router.GET("/ping", a.Ping)
 	router.GET("/status", a.GetStatus)
 
-	router.POST("/shard/status", a.SetShardStatus)
+	router.PATCH("/shard/status", a.SetShardStatus)
 
 	router.GET("/config", a.GetConfig)
 	router.POST("/actions/config", a.SetConfig)

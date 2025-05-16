@@ -1,6 +1,7 @@
 package main
 
 import (
+	"log"
 	"log/slog"
 	"math/rand"
 	"os"
@@ -10,7 +11,10 @@ import (
 	"time"
 
 	"github.com/caarlos0/env/v11"
+	"github.com/getsentry/sentry-go"
+	sentryslog "github.com/getsentry/sentry-go/slog"
 	"github.com/gin-gonic/gin"
+	slogmulti "github.com/samber/slog-multi"
 
 	"pluralkit/manager/internal/api"
 	"pluralkit/manager/internal/core"
@@ -27,6 +31,29 @@ func main() {
 		os.Exit(1)
 	}
 
+	//setup logger
+	var logger *slog.Logger
+	if len(cfg.SentryURL) > 0 {
+		err = sentry.Init(sentry.ClientOptions{
+			Dsn: cfg.SentryURL,
+		})
+		if err != nil {
+			log.Fatal(err)
+		}
+		defer sentry.Flush(2 * time.Second)
+
+		logger = slog.New(slogmulti.Fanout(
+			sentryslog.Option{Level: slog.Level(cfg.SentryLogLevel)}.NewSentryHandler(),
+			slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+				Level: slog.Level(cfg.LogLevel),
+			}),
+		))
+	} else {
+		logger = slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+			Level: slog.Level(cfg.LogLevel),
+		}))
+	}
+
 	//seed rand
 	rand.New(rand.NewSource(time.Now().UnixNano()))
 
@@ -39,48 +66,50 @@ func main() {
 	eventChannel := make(chan core.Event)
 
 	//etcd client
-	slog.Info("setting up etcd client")
-	etcdCli := etcd.NewClient(cfg.EtcdAddr)
-	if etcdCli == nil {
-		os.Exit(1) //we print the error in the client, so just exit here
+	logger.Info("setting up etcd client")
+	etcdCli, err := etcd.NewClient(cfg.EtcdAddr)
+	if err != nil {
+		logger.Error("error while setting up etcd client!", slog.Any("error", err))
+		os.Exit(1)
 	}
 	defer etcdCli.Close()
 
 	//k8s client
-	slog.Info("setting up k8s client")
-	k8sCli := k8s.NewClient(cfg.ManagerNamespace, "pluralkit-gateway_manager") //prob add an env for namespace and label selectors?
-	if k8sCli == nil {
+	logger.Info("setting up k8s client")
+	k8sCli, err := k8s.NewClient(cfg.ManagerNamespace, "pluralkit-gateway_manager")
+	if err != nil {
+		logger.Error("error while setting up k8s client!", slog.Any("error", err))
 		os.Exit(1)
 	}
 
 	//state machine
-	slog.Info("setting up control FSM")
-	controller := core.NewController(etcdCli, k8sCli, eventChannel, cfg)
+	logger.Info("setting up control FSM")
+	controller := core.NewController(etcdCli, k8sCli, eventChannel, cfg, logger)
 
-	slog.Info("starting control FSM")
+	logger.Info("starting control FSM")
 	wg.Add(1)
 	go controller.Run(&wg)
 
 	//http api
 	//this could be replaced with the default go http handler since it's not overly complex
 	//just wanted to quickly throw together the api since it isn't the primary focus here
-	slog.Info("setting up http api")
+	logger.Info("setting up http api")
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.New()
 	router.Use(gin.Recovery())
-	apiInstance := api.NewAPI(etcdCli, controller, cfg)
+	apiInstance := api.NewAPI(etcdCli, controller, cfg, logger)
 	apiInstance.SetupRoutes(router)
 
-	slog.Info("starting http api on", slog.String("address", cfg.BindAddr))
+	logger.Info("starting http api on", slog.String("address", cfg.BindAddr))
 	go func() {
 		err := router.Run(cfg.BindAddr)
 		if err != nil {
-			slog.Error("error while running http router!", slog.Any("error", err))
+			logger.Error("error while running http router!", slog.Any("error", err))
 		}
 	}()
 
 	//wait until sigint/sigterm and safely shutdown
 	sig := <-quit
-	slog.Info("shutting down, recieved", slog.String("signal", sig.String()))
+	logger.Info("shutting down, recieved", slog.String("signal", sig.String()))
 	wg.Wait()
 }

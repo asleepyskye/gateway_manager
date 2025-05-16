@@ -3,7 +3,6 @@ package etcd
 import (
 	"context"
 	"errors"
-	"log/slog"
 	"time"
 
 	clientv3 "go.etcd.io/etcd/client/v3"
@@ -20,14 +19,13 @@ type Client struct {
 }
 
 // TODO: document this function.
-func NewClient(addr string) *Client {
+func NewClient(addr string) (*Client, error) {
 	cli, err := clientv3.New(clientv3.Config{
 		Endpoints:   []string{addr},
 		DialTimeout: 5 * time.Second,
 	})
 	if err != nil {
-		slog.Error("[etcd] error while setting up etcd!", slog.Any("error", err)) //TODO: properly handle etcd errors
-		return nil
+		return nil, err
 	}
 
 	//apparently the etcd client can fail to connect without erroring above?
@@ -36,13 +34,12 @@ func NewClient(addr string) *Client {
 	defer cancelSync()
 	err = cli.Sync(ctxSync)
 	if err != nil {
-		slog.Error("[etcd] error while setting up etcd!", slog.Any("error", err))
-		return nil
+		return nil, err
 	}
 
 	return &Client{
 		etcdClient: cli,
-	}
+	}, nil
 }
 
 // TODO: document this function.
@@ -51,10 +48,8 @@ func (c *Client) Close() error {
 		return nil
 	}
 
-	slog.Info("[etcd] closing etcd client") //TODO: setup a logger for each part so we don't have to prepend [part]?
 	err := c.etcdClient.Close()
 	if err != nil {
-		slog.Error("[etcd] error while closing etcd client!", slog.Any("error", err))
 		return err
 	}
 	c.etcdClient = nil
@@ -65,7 +60,6 @@ func (c *Client) Close() error {
 func (c *Client) Put(ctx context.Context, key string, val string) error {
 	_, err := c.etcdClient.Put(ctx, key, val)
 	if err != nil {
-		slog.Error("[etcd] error in put", slog.Any("error", err))
 		return err
 	}
 	return nil
@@ -73,9 +67,9 @@ func (c *Client) Put(ctx context.Context, key string, val string) error {
 
 // TODO: document this function.
 func (c *Client) Get(ctx context.Context, key string) (value string, err error) {
-	resp, e := c.etcdClient.Get(ctx, key)
-	if e != nil {
-		return "", e
+	resp, err := c.etcdClient.Get(ctx, key)
+	if err != nil {
+		return "", err
 	}
 	if resp.Count == 0 {
 		return "", errors.New("value not found")

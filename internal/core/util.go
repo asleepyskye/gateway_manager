@@ -1,9 +1,29 @@
 package core
 
 import (
+	"errors"
+	"log/slog"
 	"math/rand"
 	"time"
 )
+
+type SlogLevel slog.Level
+
+var LevelMappings = map[string]slog.Level{
+	"debug": slog.LevelDebug,
+	"info":  slog.LevelInfo,
+	"warn":  slog.LevelWarn,
+	"error": slog.LevelError,
+}
+
+func (l *SlogLevel) UnmarshalText(text []byte) error {
+	lvl, ok := LevelMappings[string(text)]
+	if !ok {
+		return errors.New("invalid log level")
+	}
+	*l = SlogLevel(lvl)
+	return nil
+}
 
 type ManagerConfig struct {
 	MaxConcurrency int    `env:"pluralkit__discord__max_concurrency,required"`
@@ -16,15 +36,19 @@ type ManagerConfig struct {
 
 	EventTarget      string `env:"pluralkit__manager__event_target_format" envDefault:"http://pluralkit-dotnet-bot.pluralkit.svc.cluster.local:5002/events"`
 	ManagerNamespace string `env:"pluralkit__manager__namespace" envDefault:"pluralkit-gateway"`
+
+	SentryURL      string    `env:"pluralkit__sentry_url"`
+	LogLevel       SlogLevel `env:"pluralkit__consoleloglevel" envDefault:"debug"`
+	SentryLogLevel SlogLevel `env:"pluralkit__sentryloglevel" envDefault:"error"`
 }
 
 type ShardState struct {
 	ShardID            int32 `json:"shard_id"`
 	Up                 bool  `json:"up"`
-	DisconnectionCount int32 `json:"disconnection_count"`
-	Latency            int32 `json:"latency"`
-	LastHeartbeat      int32 `json:"last_heartbeat"`
-	LastConnection     int32 `json:"last_connection"`
+	DisconnectionCount int32 `json:"disconnection_count,omitempty"`
+	Latency            int32 `json:"latency,omitempty"`
+	LastHeartbeat      int32 `json:"last_heartbeat,omitempty"`
+	LastConnection     int32 `json:"last_connection,omitempty"`
 	ClusterID          int32 `json:"cluster_id"`
 }
 

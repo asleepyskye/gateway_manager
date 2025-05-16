@@ -24,7 +24,7 @@ func (a *API) GetStatus(c *gin.Context) {
 	val, err := json.Marshal(shards)
 	if err != nil {
 		c.String(http.StatusInternalServerError, "error while marshalling shard status")
-		slog.Warn("[api] error while marshalling status", slog.Any("error", err))
+		a.Logger.Warn("error while marshalling status", slog.Any("error", err))
 		return
 	}
 	c.Data(http.StatusOK, "application/json", val)
@@ -36,13 +36,13 @@ func (a *API) SetShardStatus(c *gin.Context) {
 	data, err := io.ReadAll(c.Request.Body)
 	if err != nil {
 		c.String(http.StatusInternalServerError, "error while reading request body")
-		slog.Warn("[api] error while reading request body in SetClusterStatus", slog.Any("error", err))
+		a.Logger.Warn("error while reading request body in SetClusterStatus", slog.Any("error", err))
 		return
 	}
 	err = json.Unmarshal(data, &state)
 	if err != nil {
 		c.String(http.StatusBadRequest, "error while parsing status")
-		slog.Warn("[api] error while parsing cluster status", slog.Any("error", err))
+		a.Logger.Warn("error while parsing cluster status", slog.Any("error", err))
 		return
 	}
 	a.Controller.UpdateShardStatus(state)
@@ -54,7 +54,7 @@ func (a *API) GetConfig(c *gin.Context) {
 	val, err := a.Controller.GetConfig()
 	if err != nil {
 		c.String(http.StatusInternalServerError, "error while getting config from control")
-		slog.Warn("[api] error while getting config", slog.Any("error", err))
+		a.Logger.Warn("error while getting config", slog.Any("error", err))
 		return
 	}
 
@@ -66,14 +66,14 @@ func (a *API) SetConfig(c *gin.Context) {
 	data, err := io.ReadAll(c.Request.Body)
 	if err != nil {
 		c.String(http.StatusInternalServerError, "error while getting body data")
-		slog.Warn("[api] error while getting body data", slog.Any("error", err))
+		a.Logger.Warn("error while getting body data", slog.Any("error", err))
 		return
 	}
 
 	err = a.Controller.SetConfig(data)
 	if err != nil {
 		c.String(http.StatusInternalServerError, "error while setting config")
-		slog.Warn("[api] error while setting config", slog.Any("error", err))
+		a.Logger.Warn("error while setting config", slog.Any("error", err))
 		return
 	}
 

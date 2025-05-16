@@ -69,6 +69,11 @@ spec:
       value: '0.0.0.0:5020'
     - name: pluralkit__discord__max_concurrency
       value: '16'
+    - name: pluralkit__sentry_url
+      valueFrom:
+        secretKeyRef:
+          name: sentry-url
+          key: credential
     ports:
     - containerPort: 5020
 ---

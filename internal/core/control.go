@@ -66,6 +66,7 @@ type Machine struct {
 	sigChannel   chan os.Signal
 	eventChannel chan Event
 	config       ManagerConfig
+	logger       *slog.Logger
 
 	etcdClient     *etcd.Client
 	k8sClient      *k8s.Client
@@ -76,13 +77,15 @@ type Machine struct {
 }
 
 // TODO: document this function.
-func NewController(etcdCli *etcd.Client, k8sCli *k8s.Client, eventChan chan Event, cfg ManagerConfig) *Machine {
+func NewController(etcdCli *etcd.Client, k8sCli *k8s.Client, eventChan chan Event, cfg ManagerConfig, logger *slog.Logger) *Machine {
+	moduleLogger := logger.With("module", "control")
 	m := &Machine{
 		currentState: Monitor,
 		stateFuncs:   make(map[State]StateFunc),
 		transitions:  make(map[State]map[Event]State),
 		sigChannel:   make(chan os.Signal, 1),
 		config:       cfg,
+		logger:       moduleLogger,
 
 		eventChannel:   eventChan,
 		etcdClient:     etcdCli,
@@ -136,20 +139,20 @@ func NewController(etcdCli *etcd.Client, k8sCli *k8s.Client, eventChan chan Even
 
 	val, err := etcdCli.Get(ctxGet, "current_state")
 	if err != nil {
-		slog.Info("[control] current state does not exist in etcd")
+		m.logger.Info("current state does not exist in etcd")
 	} else if State(val) != Shutdown {
 		m.currentState = State(val)
 	}
 
 	val, err = etcdCli.Get(ctxGet, "gateway_config")
 	if err != nil {
-		slog.Info("[control] gateway config does not exist in etcd")
+		m.logger.Info("gateway config does not exist in etcd")
 		m.gwConfig = GatewayConfig{}
 	} else {
 		var config GatewayConfig
 		err = json.Unmarshal([]byte(val), &config)
 		if err != nil {
-			slog.Error("[control] error while parsing config! ", slog.Any("error", err))
+			m.logger.Warn("error while parsing config! ", slog.Any("error", err))
 		} else {
 			m.gwConfig = config
 		}
@@ -157,21 +160,21 @@ func NewController(etcdCli *etcd.Client, k8sCli *k8s.Client, eventChan chan Even
 
 	val, err = etcdCli.Get(ctxGet, "cache_endpoints")
 	if err != nil {
-		slog.Info("[control] cache endpoints does not exist in etcd")
+		m.logger.Info("cache endpoints does not exist in etcd")
 	} else {
 		err = json.Unmarshal([]byte(val), &m.cacheEndpoints)
 		if err != nil {
-			slog.Error("[control] error while parsing cache endpoints!", slog.Any("error", err))
+			m.logger.Warn("error while parsing cache endpoints!", slog.Any("error", err))
 		}
 	}
 
 	val, err = etcdCli.Get(ctxGet, "num_shards")
 	if err != nil {
-		slog.Info("[control] num shards does not exist in etcd")
+		m.logger.Info("num shards does not exist in etcd")
 	} else {
 		valInt, err := strconv.Atoi(val)
 		if err != nil {
-			slog.Error("[control] error while parsing num shards!", slog.Any("error", err))
+			m.logger.Warn("error while parsing num shards!", slog.Any("error", err))
 		} else {
 			m.numShards = valInt
 			m.shardStatus = make([]ShardState, m.numShards)
@@ -198,7 +201,7 @@ func (m *Machine) SetConfig(configStr []byte) error {
 
 	err := json.Unmarshal(configStr, &config)
 	if err != nil {
-		slog.Warn("[control] error while unmarshaling config", slog.Any("error", err))
+		m.logger.Warn("error while unmarshaling config", slog.Any("error", err))
 		return err
 	}
 
@@ -206,7 +209,7 @@ func (m *Machine) SetConfig(configStr []byte) error {
 
 	err = m.etcdClient.Put(context.Background(), "gateway_config", string(configStr))
 	if err != nil {
-		slog.Warn("[api] error while putting config", slog.Any("error", err))
+		m.logger.Warn("error while putting config", slog.Any("error", err))
 		return err
 	}
 
@@ -215,7 +218,7 @@ func (m *Machine) SetConfig(configStr []byte) error {
 
 // TODO: document this function.
 func (m *Machine) GetConfig() ([]byte, error) {
-	jsonStr, err := json.Marshal(m.config)
+	jsonStr, err := json.Marshal(m.gwConfig)
 	if err != nil {
 		return nil, err
 	}
@@ -236,8 +239,17 @@ func (m *Machine) GetShardStatus() []ShardState {
 	return m.shardStatus
 }
 
-func (m *Machine) UpdateShardStatus(status ShardState) {
-	m.shardStatus[status.ShardID] = status
+func (m *Machine) UpdateShardStatus(status ShardState) error {
+	//seemingly the easiest way to 'patch' a struct?
+	statJson, err := json.Marshal(status)
+	if err != nil {
+		return err
+	}
+	err = json.Unmarshal(statJson, &(m.shardStatus[status.ShardID]))
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 // TODO: document this function.
@@ -270,7 +282,7 @@ func (m *Machine) Run(wg *sync.WaitGroup) {
 	ctx := context.Background()
 
 	for m.currentState != Shutdown {
-		slog.Info("[control] running", slog.String("state", string(m.currentState)))
+		m.logger.Info("running", slog.String("state", string(m.currentState)))
 
 		//save our current state to etcd
 		//we should probably check for errors here?
@@ -281,7 +293,7 @@ func (m *Machine) Run(wg *sync.WaitGroup) {
 		stateHandler, ok := m.stateFuncs[m.currentState]
 		if !ok {
 			//if we have an error while getting the state function, that's a big problem, safely shutdown
-			slog.Error("[control] state error", slog.String("state", string(m.currentState)))
+			m.logger.Error("state error", slog.String("state", string(m.currentState)))
 			m.currentState = Shutdown
 			continue
 		}
@@ -293,7 +305,7 @@ func (m *Machine) Run(wg *sync.WaitGroup) {
 		//lookup our next state
 		nextState, ok := m.lookupTransition(event)
 		if !ok {
-			slog.Warn("[control] No transition defined",
+			m.logger.Warn("No transition defined",
 				slog.String("from_state", string(m.currentState)),
 				slog.String("event", string(event)))
 			continue
@@ -301,7 +313,7 @@ func (m *Machine) Run(wg *sync.WaitGroup) {
 			//this could be problematic if we reach here -- we should ensure our transitions are complete
 		}
 
-		slog.Info("[control] transitioning",
+		m.logger.Info("transitioning",
 			slog.String("from_state", string(m.currentState)),
 			slog.String("event", string(event)),
 			slog.String("to_state", string(nextState)))
@@ -320,13 +332,13 @@ func MonitorState(m *Machine) Event {
 	for {
 		select {
 		case sig := <-m.sigChannel:
-			slog.Warn("[state] os signal recieved while monitoring!", slog.String("signal", sig.String()))
+			m.logger.Warn("os signal recieved while monitoring!", slog.String("signal", sig.String()))
 			return EventSigterm
 		case cmd := <-m.eventChannel:
 			return cmd
 
 		case <-ticker.C:
-			slog.Debug("[control] checking cluster health")
+			m.logger.Debug("checking cluster health")
 
 			//first check that we have a config
 			if m.gwConfig.NumShards != 0 && m.gwConfig.PodDefinition != nil {
@@ -346,12 +358,12 @@ func RolloutState(m *Machine) Event {
 	var pod corev1.Pod
 	err := json.Unmarshal(m.gwConfig.PodDefinition, &pod)
 	if err != nil {
-		slog.Error("[control] error while parsing config!", slog.Any("error", err))
+		m.logger.Error("error while parsing config!", slog.Any("error", err))
 		return EventError
 	}
 
 	if m.numShards != m.gwConfig.NumShards {
-		slog.Error("[control] shard count in config is different from current deployment!")
+		m.logger.Error("shard count in config is different from current deployment!")
 		return EventError
 	}
 
@@ -360,24 +372,24 @@ func RolloutState(m *Machine) Event {
 	startIndex := 0
 	status, err := m.etcdClient.Get(ctx, "rollout_status")
 	if err != nil {
-		slog.Warn("[control] rollout state does not exist in etcd!")
+		m.logger.Warn("rollout state does not exist in etcd!")
 		status = "done"
 	}
 	if status != "done" {
 		startIndexStr, err := m.etcdClient.Get(ctx, "rollout_index")
 		if err != nil {
-			slog.Warn("[control] error while getting rollout index!")
+			m.logger.Warn("error while getting rollout index!")
 		} else {
 			startIndex, err = strconv.Atoi(startIndexStr)
 			if err != nil {
-				slog.Warn("[control] error while parsing rollout index!")
+				m.logger.Warn("error while parsing rollout index!")
 			}
 		}
 	}
 
 	prevUid, err := m.etcdClient.Get(ctx, "current_uid")
 	if err != nil {
-		slog.Error("[control] error while getting pod uid from etcd!")
+		m.logger.Error("error while getting pod uid from etcd!")
 		return EventError
 	}
 
@@ -385,7 +397,7 @@ func RolloutState(m *Machine) Event {
 	if status != "done" {
 		uid, err = m.etcdClient.Get(ctx, "current_rollout_uid")
 		if err != nil {
-			slog.Warn("[control] error while getting current rollout uid!")
+			m.logger.Warn("error while getting current rollout uid!")
 		}
 	}
 	if uid == "" {
@@ -403,7 +415,7 @@ func RolloutState(m *Machine) Event {
 	oldPod := ""
 	for i := startIndex; i < numReplicas; i++ {
 		m.etcdClient.Put(ctx, "rollout_index", strconv.Itoa(i))
-		slog.Info("[control] rolling out", slog.Int("rollout_index", i), slog.Int("num_replicas", numReplicas))
+		m.logger.Info("rolling out", slog.Int("rollout_index", i), slog.Int("num_replicas", numReplicas))
 
 		oldPod = fmt.Sprintf("pluralkit-gateway-%s-%d", prevUid, i)
 
@@ -419,7 +431,7 @@ func RolloutState(m *Machine) Event {
 		}
 
 		m.etcdClient.Put(ctx, "rollout_status", "waiting")
-		slog.Info("[control] waiting for ready", slog.String("old_pod", oldPod), slog.String("new_pod", pod.Name))
+		m.logger.Info("waiting for ready", slog.String("old_pod", oldPod), slog.String("new_pod", pod.Name))
 		err = m.k8sClient.WaitForReady([]string{pod.Name}, m.config.EventWaitTimeout)
 		if err != nil {
 			m.etcdClient.Put(ctx, "rollout_status", "error")
@@ -430,7 +442,7 @@ func RolloutState(m *Machine) Event {
 		req, _ := http.NewRequest("DELETE", target, nil)
 		resp, err := httpClient.Do(req)
 		if err != nil || resp.StatusCode != 302 {
-			slog.Error("error while deleting old runtime_config!", slog.Any("err", err))
+			m.logger.Error("error while deleting old runtime_config!", slog.Any("err", err))
 			m.etcdClient.Put(ctx, "rollout_status", "error")
 			return EventError
 		}
@@ -443,7 +455,7 @@ func RolloutState(m *Machine) Event {
 		req.Header.Set("Content-Type", "text/plain")
 		resp, err = httpClient.Do(req)
 		if err != nil || resp.StatusCode != 302 {
-			slog.Error("error while setting runtime_config!", slog.Any("err", err))
+			m.logger.Error("error while setting runtime_config!", slog.Any("err", err))
 			m.etcdClient.Put(ctx, "rollout_status", "error")
 			return EventError
 		}
@@ -452,7 +464,7 @@ func RolloutState(m *Machine) Event {
 		//TODO: do this more efficient
 		jsonData, err := json.Marshal(m.cacheEndpoints)
 		if err != nil {
-			slog.Warn("error while marshalling cache endpoints!", slog.Any("err", err))
+			m.logger.Warn("error while marshalling cache endpoints!", slog.Any("err", err))
 		}
 		m.etcdClient.Put(ctx, "cache_endpoints", string(jsonData))
 
@@ -481,7 +493,7 @@ func DeployState(m *Machine) Event {
 	var pod corev1.Pod
 	err := json.Unmarshal(m.gwConfig.PodDefinition, &pod)
 	if err != nil {
-		slog.Error("[control] error while parsing config!", slog.Any("error", err))
+		m.logger.Error("error while parsing config!", slog.Any("error", err))
 		return EventError
 	}
 	uid := GenerateRandomID()
@@ -559,7 +571,7 @@ func DeployState(m *Machine) Event {
 		req.Header.Set("Content-Type", "text/plain")
 		resp, err := httpClient.Do(req)
 		if err != nil || resp.StatusCode != 302 {
-			slog.Error("error while setting runtime_config!", slog.Any("err", err))
+			m.logger.Error("error while setting runtime_config!", slog.Any("err", err))
 			return EventError
 		}
 		resp.Body.Close()
@@ -567,7 +579,7 @@ func DeployState(m *Machine) Event {
 
 	jsonData, err := json.Marshal(m.cacheEndpoints)
 	if err != nil {
-		slog.Warn("error while marshalling cache endpoints!", slog.Any("err", err))
+		m.logger.Warn("error while marshalling cache endpoints!", slog.Any("err", err))
 	}
 	m.etcdClient.Put(context.Background(), "cache_endpoints", string(jsonData))
 
