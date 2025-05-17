@@ -38,8 +38,8 @@ type ManagerConfig struct {
 	ManagerNamespace string `env:"pluralkit__manager__namespace" envDefault:"pluralkit-gateway"`
 
 	SentryURL      string    `env:"pluralkit__sentry_url"`
-	LogLevel       SlogLevel `env:"pluralkit__consoleloglevel" envDefault:"debug"`
-	SentryLogLevel SlogLevel `env:"pluralkit__sentryloglevel" envDefault:"info"`
+	LogLevel       SlogLevel `env:"pluralkit__consoleloglevel" envDefault:"info"`
+	SentryLogLevel SlogLevel `env:"pluralkit__sentryloglevel" envDefault:"error"`
 }
 
 type ShardState struct {

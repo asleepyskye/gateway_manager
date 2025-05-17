@@ -1,15 +1,17 @@
 package core
 
-import "time"
+import (
+	"net/http"
+	"time"
+)
 
 type Check string
 type CheckFunc func(*Machine) bool
 
 const (
-	NumPods   Check = "check_num_pods"
-	Health    Check = "check_health"
-	Network   Check = "check_network"
-	Heartbeat Check = "check_heartbeat"
+	NumPods       Check = "check_num_pods"
+	HealthNetwork Check = "check_health_network"
+	Heartbeat     Check = "check_heartbeat"
 )
 
 // check that we have the correct number of pods
@@ -24,15 +26,20 @@ func CheckNumPods(m *Machine) bool {
 	return true
 }
 
-// check that all pods are healthy
-func CheckHealth(m *Machine) bool {
-	// TODO
-	return true
-}
-
 // check that we can contact each pod
-func CheckNetwork(m *Machine) bool {
-	// TODO
+func CheckHealthNetwork(m *Machine) bool {
+	client := http.Client{}
+	for _, v := range *m.GetCacheEndpoints() {
+		target := v + "/up"
+		req, _ := http.NewRequest("GET", target, nil)
+		resp, err := client.Do(req)
+		if err != nil {
+			return false
+		} else if resp.StatusCode != 200 {
+			return false
+		}
+		resp.Body.Close()
+	}
 	return true
 }
 
@@ -57,10 +64,9 @@ func CheckHeartbeat(m *Machine) bool {
 }
 
 var checkFuncs = map[Check]CheckFunc{
-	NumPods:   CheckNumPods,
-	Health:    CheckHealth,
-	Network:   CheckNetwork,
-	Heartbeat: CheckHeartbeat,
+	NumPods:       CheckNumPods,
+	HealthNetwork: CheckHealthNetwork,
+	Heartbeat:     CheckHeartbeat,
 }
 
 func RunChecks(m *Machine) (bool, []Check) {

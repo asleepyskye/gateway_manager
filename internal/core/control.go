@@ -35,6 +35,7 @@ const (
 	Monitor  State = "monitor"
 	Rollout  State = "rollout"
 	Rollback State = "rollback"
+	Repair   State = "repair"
 	Deploy   State = "deploy"
 	Degraded State = "degraded"
 	Shutdown State = "shutdown"
@@ -99,6 +100,7 @@ func NewController(etcdCli *etcd.Client, k8sCli *k8s.Client, eventChan chan Even
 		Deploy:   DeployState,
 		Degraded: DegradedState,
 		Rollback: RollbackState,
+		Repair:   RepairState,
 		Shutdown: ShutdownState,
 	}
 
@@ -112,7 +114,7 @@ func NewController(etcdCli *etcd.Client, k8sCli *k8s.Client, eventChan chan Even
 		},
 		Rollout: {
 			EventHealthy: Monitor,
-			EventError:   Degraded,
+			EventError:   Rollback,
 			EventSigterm: Shutdown,
 		},
 		Deploy: {
@@ -126,8 +128,15 @@ func NewController(etcdCli *etcd.Client, k8sCli *k8s.Client, eventChan chan Even
 			EventUnrecoverable: Deploy,
 			EventError:         Degraded,
 			EventSigterm:       Shutdown,
+			EventRolloutCmd:    Rollout,
+			EventDeployCmd:     Deploy,
 		},
 		Rollback: {
+			EventOk:      Monitor,
+			EventError:   Degraded,
+			EventSigterm: Shutdown,
+		},
+		Repair: {
 			EventOk:      Monitor,
 			EventError:   Degraded,
 			EventSigterm: Shutdown,
@@ -356,7 +365,7 @@ func MonitorState(m *Machine) Event {
 func changeEventTarget(client http.Client, url string, eventTarget string) error {
 	target := url + "/runtime_config/event_target"
 	var req *http.Request
-	if len(eventTarget) == 0 {
+	if len(eventTarget) > 0 {
 		req, _ = http.NewRequest("POST", target, strings.NewReader(eventTarget))
 	} else {
 		req, _ = http.NewRequest("DELETE", target, nil)
@@ -461,7 +470,7 @@ func RolloutState(m *Machine) Event {
 			return EventError
 		}
 
-		target := m.cacheEndpoints[i] + "/runtime_config/event_target"
+		target := m.cacheEndpoints[i]
 		err = changeEventTarget(httpClient, target, "")
 		if err != nil {
 			m.logger.Error("error while deleting old runtime_config!", slog.Any("err", err))
@@ -471,7 +480,7 @@ func RolloutState(m *Machine) Event {
 
 		m.cacheEndpoints[i] = fmt.Sprintf("http://%s.%s:5000", pod.Spec.Hostname, pod.Spec.Subdomain)
 
-		target = m.cacheEndpoints[i] + "/runtime_config/event_target"
+		target = m.cacheEndpoints[i]
 		err = changeEventTarget(httpClient, target, m.config.EventTarget)
 		if err != nil {
 			m.logger.Error("error while setting runtime_config!", slog.Any("err", err))
@@ -587,8 +596,7 @@ func DeployState(m *Machine) Event {
 
 	httpClient := http.Client{}
 	for _, val := range m.cacheEndpoints {
-		target := val + "/runtime_config/event_target"
-		err = changeEventTarget(httpClient, target, m.config.EventTarget)
+		err = changeEventTarget(httpClient, val, m.config.EventTarget)
 		if err != nil {
 			m.logger.Error("error while setting runtime_config!", slog.Any("err", err))
 			return EventError
@@ -636,12 +644,15 @@ func DegradedState(m *Machine) Event {
 			}
 		}
 	}
-
-	//maybe add a 'repair' state that does what deploy does, but for not-healthy pods?
 }
 
 // TODO: document this function.
 func RollbackState(m *Machine) Event {
+	return ""
+}
+
+// TODO: document this function.
+func RepairState(m *Machine) Event {
 	return ""
 }
 
