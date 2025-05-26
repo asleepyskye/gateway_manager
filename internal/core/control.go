@@ -458,6 +458,7 @@ func RolloutState(m *Machine) Event {
 			_, err := m.k8sClient.CreatePod(&pod)
 			if err != nil {
 				m.etcdClient.Put(ctx, "rollout_status", "error")
+				m.logger.Error("error while creating pods in rollout!", slog.Any("error", err))
 				return EventError
 			}
 		}
@@ -467,14 +468,17 @@ func RolloutState(m *Machine) Event {
 		err = m.k8sClient.WaitForReady(ctx, []string{pod.Name}, m.config.EventWaitTimeout)
 		if err != nil {
 			m.etcdClient.Put(ctx, "rollout_status", "error")
+			m.logger.Error("error while waiting for pod in rollout!", slog.Any("error", err))
+			m.k8sClient.DeletePod(pod.Name)
 			return EventError
 		}
 
 		target := m.cacheEndpoints[i]
 		err = changeEventTarget(httpClient, target, "")
 		if err != nil {
-			m.logger.Error("error while deleting old runtime_config!", slog.Any("err", err))
 			m.etcdClient.Put(ctx, "rollout_status", "error")
+			m.logger.Error("error while deleting old runtime_config!", slog.Any("err", err))
+			m.k8sClient.DeletePod(pod.Name)
 			return EventError //TODO: should we return error here??
 		}
 
@@ -483,8 +487,9 @@ func RolloutState(m *Machine) Event {
 		target = m.cacheEndpoints[i]
 		err = changeEventTarget(httpClient, target, m.config.EventTarget)
 		if err != nil {
-			m.logger.Error("error while setting runtime_config!", slog.Any("err", err))
 			m.etcdClient.Put(ctx, "rollout_status", "error")
+			m.logger.Error("error while setting runtime_config!", slog.Any("err", err))
+			m.k8sClient.DeletePod(pod.Name)
 			return EventError
 		}
 
@@ -498,11 +503,13 @@ func RolloutState(m *Machine) Event {
 		err = m.k8sClient.DeletePod(oldPod)
 		if err != nil {
 			m.etcdClient.Put(ctx, "rollout_status", "error")
+			m.logger.Error("error while deleting old pod!", slog.Any("err", err))
 			return EventError
 		}
 		err = m.k8sClient.WaitForDeleted(ctx, []string{oldPod}, m.config.EventWaitTimeout)
 		if err != nil {
 			m.etcdClient.Put(ctx, "rollout_status", "error")
+			m.logger.Error("error while waiting for old pod to be deleted!", slog.Any("err", err))
 			return EventError
 		}
 
@@ -555,10 +562,12 @@ func DeployState(m *Machine) Event {
 	if len(pods) > 0 {
 		err = m.k8sClient.DeleteAllPods()
 		if err != nil {
+			m.logger.Error("error while deleting pods in deploy!", slog.Any("err", err))
 			return EventError
 		}
 		err = m.k8sClient.WaitForDeleted(ctx, pods, m.config.EventWaitTimeout)
 		if err != nil {
+			m.logger.Error("error while waiting for pods to be deleted in deploy!", slog.Any("err", err))
 			return EventError
 		}
 	}
@@ -581,6 +590,7 @@ func DeployState(m *Machine) Event {
 
 		_, err := m.k8sClient.CreatePod(&pod)
 		if err != nil {
+			m.logger.Error("error while creating pod in deploy!", slog.Any("err", err))
 			return EventError
 		}
 		podNames[i] = pod.Name
@@ -591,6 +601,7 @@ func DeployState(m *Machine) Event {
 
 	err = m.k8sClient.WaitForReady(ctx, podNames, m.config.EventWaitTimeout)
 	if err != nil {
+		m.logger.Error("error while waiting for pods to be ready in deploy!", slog.Any("err", err))
 		return EventError
 	}
 
