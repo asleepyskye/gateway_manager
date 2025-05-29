@@ -65,7 +65,21 @@ Handler for /config
 returns the current running configuration for manager
 */
 func (a *API) GetConfig(w http.ResponseWriter, r *http.Request) {
-	val := a.Controller.GetConfig()
+	val := a.Controller.GetCurrentConfig()
+
+	if err := render.Render(w, r, &val); err != nil {
+		http.Error(w, "error while rendering response", 500)
+		return
+	}
+}
+
+/*
+Handler for /config/next
+
+returns the next configuration for manager
+*/
+func (a *API) GetNextConfig(w http.ResponseWriter, r *http.Request) {
+	val := a.Controller.GetNextConfig()
 
 	if err := render.Render(w, r, &val); err != nil {
 		http.Error(w, "error while rendering response", 500)
@@ -131,7 +145,7 @@ func (a *API) GetCache(w http.ResponseWriter, r *http.Request) {
 	reqPath := strings.TrimRight(chi.URLParam(r, "*"), "/")
 
 	path := "/guilds/" + strconv.Itoa(guildID)
-	if (len(reqPath) > 0) {
+	if len(reqPath) > 0 {
 		path += "/" + reqPath
 	}
 

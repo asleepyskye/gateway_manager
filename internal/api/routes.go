@@ -42,6 +42,7 @@ func (a *API) SetupRoutes(router *chi.Mux) {
 	router.Patch("/shard/status", a.SetShardStatus)
 
 	router.Get("/config", a.GetConfig)
+	router.Get("/config/next", a.GetNextConfig)
 
 	router.Route("/actions", func(r chi.Router) {
 		r.Post("/config", a.SetConfig)

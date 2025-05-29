@@ -57,7 +57,7 @@ type ShardStateList struct {
 	Shards []ShardState `json:"shards"`
 }
 
-// render helper function for IncidentList
+// render helper function for ShardStateList
 func (i *ShardStateList) Render(w http.ResponseWriter, r *http.Request) error { return nil }
 
 const alphanumeric = "abcdefghijklmnopqrstuvwxyz0123456789"
