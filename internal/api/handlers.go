@@ -127,7 +127,13 @@ func (a *API) GetCache(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "error while reading param", 500)
 		return
 	}
-	path := "/guilds/" + strconv.Itoa(guildID) + strings.TrimRight(chi.URLParam(r, "*"), "/")
+
+	reqPath := strings.TrimRight(chi.URLParam(r, "*"), "/")
+
+	path := "/guilds/" + strconv.Itoa(guildID)
+	if (len(reqPath) > 0) {
+		path += "/" + reqPath
+	}
 
 	shardID := (guildID >> 22) % *a.NumShards
 	clusterID := shardID / a.Config.MaxConcurrency

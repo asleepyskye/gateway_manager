@@ -94,8 +94,6 @@ func main() {
 	go controller.Run(&wg)
 
 	//http api
-	//this could be replaced with the default go http handler since it's not overly complex
-	//just wanted to quickly throw together the api since it isn't the primary focus here
 	logger.Info("setting up http api")
 	router := chi.NewRouter()
 	router.Use(middleware.Recoverer)
