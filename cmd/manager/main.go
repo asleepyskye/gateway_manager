@@ -4,6 +4,7 @@ import (
 	"log"
 	"log/slog"
 	"math/rand"
+	"net/http"
 	"os"
 	"os/signal"
 	"sync"
@@ -13,7 +14,9 @@ import (
 	"github.com/caarlos0/env/v11"
 	"github.com/getsentry/sentry-go"
 	sentryslog "github.com/getsentry/sentry-go/slog"
-	"github.com/gin-gonic/gin"
+	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
+	"github.com/go-chi/render"
 	slogmulti "github.com/samber/slog-multi"
 
 	"pluralkit/manager/internal/api"
@@ -94,15 +97,16 @@ func main() {
 	//this could be replaced with the default go http handler since it's not overly complex
 	//just wanted to quickly throw together the api since it isn't the primary focus here
 	logger.Info("setting up http api")
-	gin.SetMode(gin.ReleaseMode)
-	router := gin.New()
-	router.Use(gin.Recovery())
+	router := chi.NewRouter()
+	router.Use(middleware.Recoverer)
+	router.Use(render.SetContentType(render.ContentTypeJSON))
+
 	apiInstance := api.NewAPI(etcdCli, controller, cfg, logger)
 	apiInstance.SetupRoutes(router)
 
 	logger.Info("starting http api on", slog.String("address", cfg.BindAddr))
 	go func() {
-		err := router.Run(cfg.BindAddr)
+		err := http.ListenAndServe(cfg.BindAddr, router)
 		if err != nil {
 			logger.Error("error while running http router!", slog.Any("error", err))
 		}

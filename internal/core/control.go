@@ -59,6 +59,9 @@ type GatewayConfig struct {
 	PodDefinition json.RawMessage
 }
 
+// render helper function for IncidentList
+func (i *GatewayConfig) Render(w http.ResponseWriter, r *http.Request) error { return nil }
+
 // TODO: document this struct.
 type Machine struct {
 	currentState State
@@ -226,12 +229,8 @@ func (m *Machine) SetConfig(configStr []byte) error {
 }
 
 // TODO: document this function.
-func (m *Machine) GetConfig() ([]byte, error) {
-	jsonStr, err := json.Marshal(m.gwConfig)
-	if err != nil {
-		return nil, err
-	}
-	return jsonStr, nil
+func (m *Machine) GetConfig() GatewayConfig {
+	return m.gwConfig
 }
 
 // TODO: document this function.

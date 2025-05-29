@@ -6,10 +6,10 @@ import (
 	"pluralkit/manager/internal/core"
 	"pluralkit/manager/internal/etcd"
 
-	"github.com/gin-gonic/gin"
+	"github.com/go-chi/chi/v5"
 )
 
-// TODO: document this struct.
+// Helper struct for API
 type API struct {
 	EtcdClient     *etcd.Client
 	Controller     *core.Machine
@@ -20,7 +20,7 @@ type API struct {
 	Logger         *slog.Logger
 }
 
-// TODO: document this function.
+// Helper func for creating an API struct
 func NewAPI(etcdCli *etcd.Client, controller *core.Machine, config core.ManagerConfig, logger *slog.Logger) *API {
 	moduleLogger := logger.With(slog.String("module", "API"))
 	return &API{
@@ -34,17 +34,20 @@ func NewAPI(etcdCli *etcd.Client, controller *core.Machine, config core.ManagerC
 	}
 }
 
-// TODO: document this function.
-func (a *API) SetupRoutes(router *gin.Engine) {
-	router.GET("/ping", a.Ping)
-	router.GET("/status", a.GetStatus)
+// Sets up routes
+func (a *API) SetupRoutes(router *chi.Mux) {
+	router.Get("/ping", a.Ping)
+	router.Get("/status", a.GetStatus)
 
-	router.PATCH("/shard/status", a.SetShardStatus)
+	router.Patch("/shard/status", a.SetShardStatus)
 
-	router.GET("/config", a.GetConfig)
-	router.POST("/actions/config", a.SetConfig)
-	router.POST("/actions/rollout", a.SetRollout)
-	router.POST("/actions/deploy", a.SetDeploy)
+	router.Get("/config", a.GetConfig)
 
-	router.GET("/cache/guilds/:id/*path", a.GetCache)
+	router.Route("/actions", func(r chi.Router) {
+		r.Post("/config", a.SetConfig)
+		r.Post("/rollout", a.SetRollout)
+		r.Post("/deploy", a.SetDeploy)
+	})
+
+	router.Get("/cache/guilds/:id/*", a.GetCache)
 }

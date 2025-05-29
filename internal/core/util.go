@@ -4,6 +4,7 @@ import (
 	"errors"
 	"log/slog"
 	"math/rand"
+	"net/http"
 	"time"
 )
 
@@ -51,6 +52,13 @@ type ShardState struct {
 	LastConnection     int32 `json:"last_connection,omitempty"`
 	ClusterID          int32 `json:"cluster_id"`
 }
+
+type ShardStateList struct {
+	Shards []ShardState `json:"shards"`
+}
+
+// render helper function for IncidentList
+func (i *ShardStateList) Render(w http.ResponseWriter, r *http.Request) error { return nil }
 
 const alphanumeric = "abcdefghijklmnopqrstuvwxyz0123456789"
 

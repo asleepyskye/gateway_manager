@@ -69,6 +69,7 @@ var checkFuncs = map[Check]CheckFunc{
 	Heartbeat:     CheckHeartbeat,
 }
 
+// helper function to run all checks
 func RunChecks(m *Machine) (bool, []Check) {
 	failures := []Check{}
 

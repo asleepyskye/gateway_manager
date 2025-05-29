@@ -8,98 +8,126 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/gin-gonic/gin"
-
 	"pluralkit/manager/internal/core"
+
+	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/render"
 )
 
-// TODO: document this function.
-func (a *API) Ping(c *gin.Context) {
-	c.String(http.StatusOK, "pong!")
+/*
+Handler for /ping
+
+returns "pong!"
+*/
+func (a *API) Ping(w http.ResponseWriter, r *http.Request) {
+	w.Write([]byte("pong!"))
 }
 
-// TODO: document this function.
-func (a *API) GetStatus(c *gin.Context) {
+/*
+Handler for /status
+
+returns the status of all shards
+*/
+func (a *API) GetStatus(w http.ResponseWriter, r *http.Request) {
 	shards := a.Controller.GetShardStatus()
-	val, err := json.Marshal(shards)
-	if err != nil {
-		c.String(http.StatusInternalServerError, "error while marshalling shard status")
-		a.Logger.Warn("error while marshalling status", slog.Any("error", err))
+	if err := render.Render(w, r, &core.ShardStateList{Shards: shards}); err != nil {
+		http.Error(w, "error while rendering response", 500)
 		return
 	}
-	c.Data(http.StatusOK, "application/json", val)
 }
 
-// TODO: document this function.
-func (a *API) SetShardStatus(c *gin.Context) {
+/*
+Handler for /shard/status
+
+Patches the status for an individual shard.
+*/
+func (a *API) SetShardStatus(w http.ResponseWriter, r *http.Request) {
 	var state core.ShardState
-	data, err := io.ReadAll(c.Request.Body)
+	data, err := io.ReadAll(r.Body)
 	if err != nil {
-		c.String(http.StatusInternalServerError, "error while reading request body")
+		http.Error(w, "error while reading request body", 500)
 		a.Logger.Warn("error while reading request body in SetClusterStatus", slog.Any("error", err))
 		return
 	}
 	err = json.Unmarshal(data, &state)
 	if err != nil {
-		c.String(http.StatusBadRequest, "error while parsing status")
+		http.Error(w, "error while parsing status", 500)
 		a.Logger.Warn("error while parsing cluster status", slog.Any("error", err))
 		return
 	}
 	a.Controller.UpdateShardStatus(state)
-	c.String(http.StatusOK, "")
+	w.Write([]byte(""))
 }
 
-// TODO: document this function.
-func (a *API) GetConfig(c *gin.Context) {
-	val, err := a.Controller.GetConfig()
-	if err != nil {
-		c.String(http.StatusInternalServerError, "error while getting config from control")
-		a.Logger.Warn("error while getting config", slog.Any("error", err))
+/*
+Handler for /config
+
+returns the current running configuration for manager
+*/
+func (a *API) GetConfig(w http.ResponseWriter, r *http.Request) {
+	val := a.Controller.GetConfig()
+
+	if err := render.Render(w, r, &val); err != nil {
+		http.Error(w, "error while rendering response", 500)
 		return
 	}
-
-	c.Data(http.StatusOK, "application/json", val)
 }
 
-// TODO: document this function.
-func (a *API) SetConfig(c *gin.Context) {
-	data, err := io.ReadAll(c.Request.Body)
+/*
+Handler for /actions/config
+
+Sets the next running configuration for manager
+*/
+func (a *API) SetConfig(w http.ResponseWriter, r *http.Request) {
+	data, err := io.ReadAll(r.Body)
 	if err != nil {
-		c.String(http.StatusInternalServerError, "error while getting body data")
+		http.Error(w, "error while getting body data", 500)
 		a.Logger.Warn("error while getting body data", slog.Any("error", err))
 		return
 	}
 
 	err = a.Controller.SetConfig(data)
 	if err != nil {
-		c.String(http.StatusInternalServerError, "error while setting config")
+		http.Error(w, "error while setting config", 500)
 		a.Logger.Warn("error while setting config", slog.Any("error", err))
 		return
 	}
 
-	c.String(http.StatusOK, "")
+	w.Write([]byte(""))
 }
 
-// TODO: document this function.
-func (a *API) SetRollout(c *gin.Context) {
+/*
+Handler for /actions/rollout
+
+Sends a rollout event command to start a rollout on manager
+*/
+func (a *API) SetRollout(w http.ResponseWriter, r *http.Request) {
 	a.Controller.SendEvent(core.EventRolloutCmd)
-	c.String(http.StatusOK, "")
+	w.Write([]byte(""))
 }
 
-// TODO: document this function.
-func (a *API) SetDeploy(c *gin.Context) {
+/*
+Handler for /actions/deploy
+
+Sends a deploy event command to start a deploy on manager
+*/
+func (a *API) SetDeploy(w http.ResponseWriter, r *http.Request) {
 	a.Controller.SendEvent(core.EventDeployCmd)
-	c.String(http.StatusOK, "")
+	w.Write([]byte(""))
 }
 
-// TODO: document this function.
-func (a *API) GetCache(c *gin.Context) {
-	guildID, err := strconv.Atoi(c.Param("id"))
+/*
+Handler for /cache/guilds/:id/*path
+
+Acts as a proxy to the appropriate gateway instance based on the guild ID.
+*/
+func (a *API) GetCache(w http.ResponseWriter, r *http.Request) {
+	guildID, err := strconv.Atoi(chi.URLParam(r, "id"))
 	if err != nil {
-		c.String(http.StatusInternalServerError, "")
+		http.Error(w, "error while reading param", 500)
 		return
 	}
-	path := "/guilds/" + strconv.Itoa(guildID) + strings.TrimRight(c.Param("path"), "/")
+	path := "/guilds/" + strconv.Itoa(guildID) + strings.TrimRight(chi.URLParam(r, "*"), "/")
 
 	shardID := (guildID >> 22) % *a.NumShards
 	clusterID := shardID / a.Config.MaxConcurrency
@@ -108,10 +136,10 @@ func (a *API) GetCache(c *gin.Context) {
 
 	req, err := http.NewRequest(http.MethodGet, target, nil)
 	if err != nil {
-		c.String(http.StatusInternalServerError, "")
+		http.Error(w, "error while creating request", 500)
 		return
 	}
-	for header, values := range c.Request.Header {
+	for header, values := range r.Header {
 		for _, value := range values {
 			req.Header.Add(header, value)
 		}
@@ -119,20 +147,20 @@ func (a *API) GetCache(c *gin.Context) {
 
 	resp, err := a.httpClient.Do(req)
 	if err != nil {
-		c.String(http.StatusInternalServerError, "")
+		http.Error(w, "error while requesting data", 500)
 		return
 	}
 	defer resp.Body.Close()
-	c.Status(resp.StatusCode)
+	w.WriteHeader(resp.StatusCode)
 	for header, values := range resp.Header {
 		for _, value := range values {
-			c.Writer.Header().Add(header, value)
+			w.Header().Add(header, value)
 		}
 	}
 
-	_, err = io.Copy(c.Writer, resp.Body)
+	_, err = io.Copy(w, resp.Body)
 	if err != nil {
-		c.String(http.StatusInternalServerError, "")
+		http.Error(w, "error while copying response", 500)
 		return
 	}
 }
