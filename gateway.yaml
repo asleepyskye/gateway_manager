@@ -40,15 +40,6 @@ spec:
             secretKeyRef:
               name: sentry-url
               key: credential
-        - name: pluralkit__discord__cluster__total_shards
-          valueFrom:
-            configMapKeyRef:
-              name: pluralkit-config-shared
-              key: PluralKit__TotalShards
-        - name: pluralkit__discord__max_concurrency
-          value: '1'
-        - name: pluralkit__runtime_config_key
-          value: gateway-k8s
         - name: STATEFULSET_NAME_FOR_INDEX
           valueFrom:
             fieldRef:

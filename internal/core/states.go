@@ -65,6 +65,21 @@ func changeEventTarget(client http.Client, url string, eventTarget string) error
 	return nil
 }
 
+func addEnvs(m *Machine, pod *corev1.Pod) {
+	pod.Spec.Containers[0].Env = append(pod.Spec.Containers[0].Env, corev1.EnvVar{
+		Name:  "pluralkit__discord__cluster__total_shards",
+		Value: strconv.Itoa(m.numShards),
+	})
+	pod.Spec.Containers[0].Env = append(pod.Spec.Containers[0].Env, corev1.EnvVar{
+		Name:  "pluralkit__discord__max_concurrency",
+		Value: strconv.Itoa(m.config.MaxConcurrency),
+	})
+	pod.Spec.Containers[0].Env = append(pod.Spec.Containers[0].Env, corev1.EnvVar{
+		Name:  "pluralkit__runtime_config_key",
+		Value: "gateway-k8s",
+	})
+}
+
 // TODO: document this function.
 func RolloutState(m *Machine) Event {
 	//should also check for sigterm here, but if we get a sigterm here, that could be problematic?
@@ -77,13 +92,12 @@ func RolloutState(m *Machine) Event {
 		m.logger.Error("error while parsing config!", slog.Any("error", err))
 		return EventError
 	}
+	addEnvs(m, &pod)
 
 	if m.numShards != m.nextGWConfig.NumShards {
 		m.logger.Error("shard count in config is different from current deployment!")
 		return EventError
 	}
-
-	//TODO: inject shard count here?
 
 	startIndex := 0
 	status, err := m.etcdClient.Get(ctx, "rollout_status")
@@ -266,6 +280,7 @@ func DeployState(m *Machine) Event {
 		m.logger.Error("error while parsing config!", slog.Any("error", err))
 		return EventError
 	}
+	addEnvs(m, &pod)
 	uid := GenerateRandomID()
 	m.etcdClient.Put(ctx, "current_uid", uid)
 
