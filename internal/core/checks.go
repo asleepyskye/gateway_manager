@@ -1,7 +1,9 @@
 package core
 
 import (
+	"context"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -12,6 +14,7 @@ const (
 	NumPods       Check = "check_num_pods"
 	HealthNetwork Check = "check_health_network"
 	Heartbeat     Check = "check_heartbeat"
+	PodNames      Check = "check_pod_names"
 )
 
 // check that we have the correct number of pods
@@ -63,10 +66,29 @@ func CheckHeartbeat(m *Machine) bool {
 	return true
 }
 
+// check that each pod has the expected UID (check that all pods match iter)
+func CheckPodNames(m *Machine) bool {
+	pods, err := m.k8sClient.GetAllPodsNames()
+	if err != nil {
+		return false
+	}
+	expectedUID, err := m.etcdClient.Get(context.Background(), "current_uid")
+	if err != nil {
+		return false
+	}
+	for _, val := range pods {
+		if !strings.Contains(val, expectedUID) {
+			return false
+		}
+	}
+	return true
+}
+
 var checkFuncs = map[Check]CheckFunc{
 	NumPods:       CheckNumPods,
 	HealthNetwork: CheckHealthNetwork,
 	Heartbeat:     CheckHeartbeat,
+	PodNames:      CheckPodNames,
 }
 
 // helper function to run all checks

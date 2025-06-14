@@ -45,6 +45,7 @@ func MonitorState(m *Machine) Event {
 }
 
 // TODO: document this function
+// TODO: try again on error?
 func changeEventTarget(client http.Client, url string, eventTarget string) error {
 	target := url + "/runtime_config/event_target"
 	var req *http.Request
@@ -88,6 +89,10 @@ func RolloutState(m *Machine) Event {
 	status, err := m.etcdClient.Get(ctx, "rollout_status")
 	if err != nil {
 		m.logger.Warn("rollout state does not exist in etcd!")
+		if !CheckNumPods(m) {
+			m.logger.Error("unexpected number of pods!")
+			return EventError
+		}
 		status = "done"
 	}
 	if status != "done" {
@@ -98,6 +103,17 @@ func RolloutState(m *Machine) Event {
 			startIndex, err = strconv.Atoi(startIndexStr)
 			if err != nil {
 				m.logger.Warn("error while parsing rollout index!")
+			}
+			expectedNum := (*m.GetNumShards() / m.config.MaxConcurrency)
+			numPods, err := m.k8sClient.GetNumPods()
+			if err != nil {
+				m.logger.Error("error while getting num pods!")
+				return EventError
+			}
+
+			if numPods != expectedNum || numPods != expectedNum+1 {
+				m.logger.Error("unexpected number of pods!")
+				return EventError
 			}
 		}
 	}
@@ -112,7 +128,8 @@ func RolloutState(m *Machine) Event {
 	if status != "done" {
 		uid, err = m.etcdClient.Get(ctx, "current_rollout_uid")
 		if err != nil {
-			m.logger.Warn("error while getting current rollout uid!")
+			m.logger.Error("error while getting current rollout uid!")
+			return EventError
 		}
 	}
 	if uid == "" {
@@ -128,25 +145,45 @@ func RolloutState(m *Machine) Event {
 	//begin rollout!
 	numReplicas := m.nextGWConfig.NumShards / m.config.MaxConcurrency
 	oldPod := ""
+	target := ""
+	resume := (status != "done")
+	var jsonData []byte
 	for i := startIndex; i < numReplicas; i++ {
 		m.etcdClient.Put(ctx, "rollout_index", strconv.Itoa(i))
 		m.logger.Info("rolling out", slog.Int("rollout_index", i), slog.Int("num_replicas", numReplicas))
 
 		oldPod = fmt.Sprintf("pluralkit-gateway-%s-%d", prevUid, i)
-
 		pod.Name = fmt.Sprintf("pluralkit-gateway-%s-%d", uid, i)
 		pod.Spec.Hostname = pod.Name
 		pod.Spec.Subdomain = "gw-svc"
-		if status != "waiting" {
-			_, err := m.k8sClient.CreatePod(&pod)
-			if err != nil {
-				m.etcdClient.Put(ctx, "rollout_status", "error")
-				m.logger.Error("error while creating pods in rollout!", slog.Any("error", err))
-				return EventError
+
+		//theres uh probably a better way to do this?
+		if resume {
+			switch status {
+			case "creating":
+				goto creating
+			case "waiting":
+				goto waiting
+			case "switching_old":
+				goto switching_old
+			case "switching_new":
+				goto switching_new
+			case "deleting":
+				goto deleting
 			}
 		}
 
+		m.etcdClient.Put(ctx, "rollout_status", "creating")
+	creating:
+		_, err = m.k8sClient.CreatePod(&pod)
+		if err != nil {
+			m.etcdClient.Put(ctx, "rollout_status", "error")
+			m.logger.Error("error while creating pods in rollout!", slog.Any("error", err))
+			return EventError
+		}
+
 		m.etcdClient.Put(ctx, "rollout_status", "waiting")
+	waiting:
 		m.logger.Info("waiting for ready", slog.String("old_pod", oldPod), slog.String("new_pod", pod.Name))
 		err = m.k8sClient.WaitForReady(ctx, []string{pod.Name}, m.config.EventWaitTimeout)
 		if err != nil {
@@ -156,15 +193,19 @@ func RolloutState(m *Machine) Event {
 			return EventError
 		}
 
-		target := m.cacheEndpoints[i]
+		m.etcdClient.Put(ctx, "rollout_status", "switching_old")
+	switching_old:
+		target = m.cacheEndpoints[i]
 		err = changeEventTarget(httpClient, target, "")
 		if err != nil {
 			m.etcdClient.Put(ctx, "rollout_status", "error")
 			m.logger.Error("error while deleting old runtime_config!", slog.Any("err", err))
 			m.k8sClient.DeletePod(pod.Name)
-			return EventError //TODO: should we return error here??
+			return EventError
 		}
 
+		m.etcdClient.Put(ctx, "rollout_status", "switching_new")
+	switching_new:
 		m.cacheEndpoints[i] = fmt.Sprintf("http://%s.%s:5000", pod.Spec.Hostname, pod.Spec.Subdomain)
 
 		target = m.cacheEndpoints[i]
@@ -177,25 +218,34 @@ func RolloutState(m *Machine) Event {
 		}
 
 		//TODO: do this more efficient
-		jsonData, err := json.Marshal(m.cacheEndpoints)
+		jsonData, err = json.Marshal(m.cacheEndpoints)
 		if err != nil {
 			m.logger.Warn("error while marshalling cache endpoints!", slog.Any("err", err))
 		}
 		m.etcdClient.Put(ctx, "cache_endpoints", string(jsonData))
 
+		m.etcdClient.Put(ctx, "rollout_status", "deleting")
+	deleting:
 		err = m.k8sClient.DeletePod(oldPod)
 		if err != nil {
+			if resume {
+				continue
+			}
 			m.etcdClient.Put(ctx, "rollout_status", "error")
 			m.logger.Error("error while deleting old pod!", slog.Any("err", err))
 			return EventError
 		}
 		err = m.k8sClient.WaitForDeleted(ctx, []string{oldPod}, m.config.EventWaitTimeout)
 		if err != nil {
+			if resume {
+				continue
+			}
 			m.etcdClient.Put(ctx, "rollout_status", "error")
 			m.logger.Error("error while waiting for old pod to be deleted!", slog.Any("err", err))
 			return EventError
 		}
 
+		resume = false
 		m.etcdClient.Put(ctx, "rollout_status", "running")
 		time.Sleep(50 * time.Millisecond) //sleep a short amount of time, just in case
 	}

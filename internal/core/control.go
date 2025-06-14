@@ -63,11 +63,11 @@ type Machine struct {
 	transitions  map[State]map[Event]State
 	sigChannel   chan os.Signal
 	eventChannel chan Event
-	config       ManagerConfig
 	logger       *slog.Logger
+	etcdClient   *etcd.Client
+	k8sClient    *k8s.Client
 
-	etcdClient     *etcd.Client
-	k8sClient      *k8s.Client
+	config         ManagerConfig
 	gwConfig       GatewayConfig
 	nextGWConfig   GatewayConfig
 	cacheEndpoints []string
