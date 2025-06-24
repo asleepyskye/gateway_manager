@@ -33,7 +33,7 @@ func MonitorState(m *Machine) Event {
 			m.logger.Debug("checking cluster health")
 
 			//first check that we have a config
-			if m.gwConfig.NumShards != 0 && m.gwConfig.PodDefinition != nil {
+			if m.curGWConfig.NumShards != 0 && m.curGWConfig.PodDefinition != nil {
 				ev, failures := RunChecks(m)
 				if !ev {
 					m.logger.Error("failed one or more health checks!", slog.Any("failures", failures))
@@ -154,10 +154,12 @@ func RolloutState(m *Machine) Event {
 		m.etcdClient.Put(ctx, "current_rollout_uid", uid)
 	}
 
-	httpClient := http.Client{}
+	//update our 'previous' config
+	m.prevGWConfig = m.curGWConfig
 
 	//begin rollout!
 	numReplicas := m.nextGWConfig.NumShards / m.config.MaxConcurrency
+	httpClient := http.Client{}
 	oldPod := ""
 	target := ""
 	resume := (status != "done")
@@ -326,6 +328,9 @@ func DeployState(m *Machine) Event {
 		return EventError
 	}
 
+	//update our 'previous' config
+	m.prevGWConfig = m.curGWConfig
+
 	//begin deployment!
 	numReplicas := m.nextGWConfig.NumShards / m.config.MaxConcurrency
 	m.shardStatus = make([]ShardState, m.nextGWConfig.NumShards)
@@ -391,11 +396,10 @@ func DegradedState(m *Machine) Event {
 			m.logger.Debug("checking cluster health")
 
 			//first check that we have a config
-			if m.gwConfig.NumShards != 0 && m.gwConfig.PodDefinition != nil {
+			if m.curGWConfig.NumShards != 0 && m.curGWConfig.PodDefinition != nil {
 				ev, failures := RunChecks(m)
 				if !ev {
 					m.logger.Warn("failed one or more health checks!", slog.Any("failures", failures))
-					//TODO: determine how we get gateway healthy again based on the failed checks
 					continue
 				} else {
 					return EventHealthy
@@ -407,11 +411,6 @@ func DegradedState(m *Machine) Event {
 
 // TODO: document this function.
 func RollbackState(m *Machine) Event {
-	return ""
-}
-
-// TODO: document this function.
-func RepairState(m *Machine) Event {
 	return ""
 }
 

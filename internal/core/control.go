@@ -29,7 +29,6 @@ const (
 	Monitor  State = "monitor"
 	Rollout  State = "rollout"
 	Rollback State = "rollback"
-	Repair   State = "repair"
 	Deploy   State = "deploy"
 	Degraded State = "degraded"
 	Shutdown State = "shutdown"
@@ -68,7 +67,8 @@ type Machine struct {
 	k8sClient    *k8s.Client
 
 	config         ManagerConfig
-	gwConfig       GatewayConfig
+	curGWConfig    GatewayConfig
+	prevGWConfig   GatewayConfig
 	nextGWConfig   GatewayConfig
 	cacheEndpoints []string
 	numShards      int
@@ -98,7 +98,6 @@ func NewController(etcdCli *etcd.Client, k8sCli *k8s.Client, eventChan chan Even
 		Deploy:   DeployState,
 		Degraded: DegradedState,
 		Rollback: RollbackState,
-		Repair:   RepairState,
 		Shutdown: ShutdownState,
 	}
 
@@ -121,20 +120,13 @@ func NewController(etcdCli *etcd.Client, k8sCli *k8s.Client, eventChan chan Even
 			EventSigterm: Shutdown,
 		},
 		Degraded: {
-			EventHealthy:       Monitor,
-			EventRecoverable:   Rollback,
-			EventUnrecoverable: Deploy,
-			EventError:         Degraded,
-			EventSigterm:       Shutdown,
-			EventRolloutCmd:    Rollout,
-			EventDeployCmd:     Deploy,
+			EventHealthy:    Monitor,
+			EventError:      Degraded,
+			EventSigterm:    Shutdown,
+			EventRolloutCmd: Rollout,
+			EventDeployCmd:  Deploy,
 		},
 		Rollback: {
-			EventOk:      Monitor,
-			EventError:   Degraded,
-			EventSigterm: Shutdown,
-		},
-		Repair: {
 			EventOk:      Monitor,
 			EventError:   Degraded,
 			EventSigterm: Shutdown,
@@ -154,14 +146,14 @@ func NewController(etcdCli *etcd.Client, k8sCli *k8s.Client, eventChan chan Even
 	val, err = etcdCli.Get(ctxGet, "gateway_config")
 	if err != nil {
 		m.logger.Info("gateway config does not exist in etcd")
-		m.gwConfig = GatewayConfig{}
+		m.curGWConfig = GatewayConfig{}
 	} else {
 		var config GatewayConfig
 		err = json.Unmarshal([]byte(val), &config)
 		if err != nil {
 			m.logger.Warn("error while parsing config! ", slog.Any("error", err))
 		} else {
-			m.gwConfig = config
+			m.curGWConfig = config
 		}
 	}
 
@@ -225,7 +217,7 @@ func (m *Machine) SetConfig(configStr []byte) error {
 
 // returns the current gw config
 func (m *Machine) GetCurrentConfig() GatewayConfig {
-	return m.gwConfig
+	return m.curGWConfig
 }
 
 // returns the specified next gw config
