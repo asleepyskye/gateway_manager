@@ -33,7 +33,7 @@ func MonitorState(m *Machine) Event {
 			m.logger.Debug("checking cluster health")
 
 			//first check that we have a config
-			if m.curGWConfig.NumShards != 0 && m.curGWConfig.PodDefinition != nil {
+			if m.gwConfig.Cur.NumShards != 0 && m.gwConfig.Cur.PodDefinition != nil {
 				ev, failures := RunChecks(m)
 				if !ev {
 					m.logger.Error("failed one or more health checks!", slog.Any("failures", failures))
@@ -68,7 +68,7 @@ func changeEventTarget(client http.Client, url string, eventTarget string) error
 func addEnvs(m *Machine, pod *corev1.Pod) {
 	pod.Spec.Containers[0].Env = append(pod.Spec.Containers[0].Env, corev1.EnvVar{
 		Name:  "pluralkit__discord__cluster__total_shards",
-		Value: strconv.Itoa(m.numShards),
+		Value: strconv.Itoa(m.gwConfig.Cur.NumShards),
 	})
 	pod.Spec.Containers[0].Env = append(pod.Spec.Containers[0].Env, corev1.EnvVar{
 		Name:  "pluralkit__discord__max_concurrency",
@@ -82,19 +82,19 @@ func addEnvs(m *Machine, pod *corev1.Pod) {
 
 // TODO: document this function.
 func RolloutState(m *Machine) Event {
-	//should also check for sigterm here, but if we get a sigterm here, that could be problematic?
+	// TODO: check for sigterm
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	var pod corev1.Pod
-	err := json.Unmarshal(m.nextGWConfig.PodDefinition, &pod)
+	err := json.Unmarshal(m.gwConfig.Next.PodDefinition, &pod)
 	if err != nil {
 		m.logger.Error("error while parsing config!", slog.Any("error", err))
 		return EventError
 	}
 	addEnvs(m, &pod)
 
-	if m.numShards != m.nextGWConfig.NumShards {
+	if m.gwConfig.Cur.NumShards != m.gwConfig.Next.NumShards {
 		m.logger.Error("shard count in config is different from current deployment!")
 		return EventError
 	}
@@ -118,7 +118,7 @@ func RolloutState(m *Machine) Event {
 			if err != nil {
 				m.logger.Warn("error while parsing rollout index!")
 			}
-			expectedNum := (*m.GetNumShards() / m.config.MaxConcurrency)
+			expectedNum := (m.gwConfig.Cur.NumShards / m.config.MaxConcurrency)
 			numPods, err := m.k8sClient.GetNumPods()
 			if err != nil {
 				m.logger.Error("error while getting num pods!")
@@ -155,10 +155,12 @@ func RolloutState(m *Machine) Event {
 	}
 
 	//update our 'previous' config
-	m.prevGWConfig = m.curGWConfig
+	m.mu.Lock()
+	m.gwConfig.Prev = m.gwConfig.Cur
+	m.mu.Unlock()
 
 	//begin rollout!
-	numReplicas := m.nextGWConfig.NumShards / m.config.MaxConcurrency
+	numReplicas := m.gwConfig.Next.NumShards / m.config.MaxConcurrency
 	httpClient := http.Client{}
 	oldPod := ""
 	target := ""
@@ -222,7 +224,9 @@ func RolloutState(m *Machine) Event {
 
 		m.etcdClient.Put(ctx, "rollout_status", "switching_new")
 	switching_new:
+		m.mu.Lock()
 		m.cacheEndpoints[i] = fmt.Sprintf("http://%s.%s:5000", pod.Spec.Hostname, pod.Spec.Subdomain)
+		m.mu.Unlock()
 
 		target = m.cacheEndpoints[i]
 		err = changeEventTarget(httpClient, target, m.config.EventTarget)
@@ -266,6 +270,11 @@ func RolloutState(m *Machine) Event {
 		time.Sleep(50 * time.Millisecond) //sleep a short amount of time, just in case
 	}
 
+	//update our current config
+	m.mu.Lock()
+	m.gwConfig.Cur = m.gwConfig.Next
+	m.mu.Unlock()
+
 	m.etcdClient.Put(ctx, "rollout_status", "done")
 	m.etcdClient.Put(ctx, "current_uid", uid)
 	return EventHealthy
@@ -277,7 +286,7 @@ func DeployState(m *Machine) Event {
 	defer cancel()
 
 	var pod corev1.Pod
-	err := json.Unmarshal(m.nextGWConfig.PodDefinition, &pod)
+	err := json.Unmarshal(m.gwConfig.Next.PodDefinition, &pod)
 	if err != nil {
 		m.logger.Error("error while parsing config!", slog.Any("error", err))
 		return EventError
@@ -329,13 +338,17 @@ func DeployState(m *Machine) Event {
 	}
 
 	//update our 'previous' config
-	m.prevGWConfig = m.curGWConfig
+	m.mu.Lock()
+	m.gwConfig.Prev = m.gwConfig.Cur
+	m.mu.Unlock()
 
 	//begin deployment!
-	numReplicas := m.nextGWConfig.NumShards / m.config.MaxConcurrency
-	m.shardStatus = make([]ShardState, m.nextGWConfig.NumShards)
+	m.mu.Lock()
+	numReplicas := m.gwConfig.Next.NumShards / m.config.MaxConcurrency
+	m.shardStatus = make([]ShardState, m.gwConfig.Next.NumShards)
 	m.cacheEndpoints = make([]string, numReplicas)
 	podNames := make([]string, numReplicas)
+	m.mu.Unlock()
 	for i := range numReplicas {
 		pod.Name = fmt.Sprintf("pluralkit-gateway-%s-%d", uid, i)
 		pod.Spec.Hostname = pod.Name
@@ -348,7 +361,9 @@ func DeployState(m *Machine) Event {
 		}
 		podNames[i] = pod.Name
 
+		m.mu.Lock()
 		m.cacheEndpoints[i] = fmt.Sprintf("http://%s.%s:5000", pod.Spec.Hostname, pod.Spec.Subdomain)
+		m.mu.Unlock()
 		time.Sleep(50 * time.Millisecond) //sleep a short amount of time, just in case
 	}
 
@@ -373,8 +388,9 @@ func DeployState(m *Machine) Event {
 	}
 	m.etcdClient.Put(ctx, "cache_endpoints", string(jsonData))
 
-	m.numShards = m.nextGWConfig.NumShards
-	m.etcdClient.Put(ctx, "num_shards", strconv.Itoa(m.numShards))
+	m.mu.Lock()
+	m.gwConfig.Cur = m.gwConfig.Next
+	m.mu.Unlock()
 	return EventHealthy
 }
 
@@ -396,7 +412,7 @@ func DegradedState(m *Machine) Event {
 			m.logger.Debug("checking cluster health")
 
 			//first check that we have a config
-			if m.curGWConfig.NumShards != 0 && m.curGWConfig.PodDefinition != nil {
+			if m.gwConfig.Cur.NumShards != 0 && m.gwConfig.Cur.PodDefinition != nil {
 				ev, failures := RunChecks(m)
 				if !ev {
 					m.logger.Warn("failed one or more health checks!", slog.Any("failures", failures))

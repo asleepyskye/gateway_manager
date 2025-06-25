@@ -23,7 +23,7 @@ func CheckNumPods(m *Machine) bool {
 	if err != nil {
 		return false
 	}
-	if numPods != (*m.GetNumShards() / m.config.MaxConcurrency) {
+	if numPods != (m.GetNumShards() / m.config.MaxConcurrency) {
 		return false
 	}
 	return true
@@ -32,7 +32,7 @@ func CheckNumPods(m *Machine) bool {
 // check that we can contact each pod
 func CheckHealthNetwork(m *Machine) bool {
 	client := http.Client{}
-	for _, v := range *m.GetCacheEndpoints() {
+	for _, v := range m.cacheEndpoints {
 		target := v + "/up"
 		req, _ := http.NewRequest("GET", target, nil)
 		resp, err := client.Do(req)
@@ -48,12 +48,11 @@ func CheckHealthNetwork(m *Machine) bool {
 
 // check that each cluster has heartbeated recently with at half the shards (maybe make this all?)
 func CheckHeartbeat(m *Machine) bool {
-	numClusters := *m.GetNumShards() / m.config.MaxConcurrency
-	shardStatus := m.GetShardStatus()
+	numClusters := m.gwConfig.Cur.NumShards / m.config.MaxConcurrency
 	for c := range numClusters {
 		numHeartbeated := 0
 		for s := range m.config.MaxConcurrency {
-			shard := shardStatus[(c*m.config.MaxConcurrency)+s]
+			shard := m.shardStatus[(c*m.config.MaxConcurrency)+s]
 			ht := time.Unix(int64(shard.LastHeartbeat), 0)
 			if time.Now().Before(ht.Add(time.Duration(5) * time.Minute)) {
 				numHeartbeated++

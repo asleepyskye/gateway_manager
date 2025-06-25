@@ -24,13 +24,11 @@ type API struct {
 func NewAPI(etcdCli *etcd.Client, controller *core.Machine, config core.ManagerConfig, logger *slog.Logger) *API {
 	moduleLogger := logger.With(slog.String("module", "API"))
 	return &API{
-		EtcdClient:     etcdCli,
-		Controller:     controller,
-		CacheEndpoints: controller.GetCacheEndpoints(),
-		NumShards:      controller.GetNumShards(),
-		httpClient:     http.Client{},
-		Config:         config,
-		Logger:         moduleLogger,
+		EtcdClient: etcdCli,
+		Controller: controller,
+		httpClient: http.Client{},
+		Config:     config,
+		Logger:     moduleLogger,
 	}
 }
 

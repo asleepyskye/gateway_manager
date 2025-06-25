@@ -10,7 +10,6 @@ import (
 	"os/signal"
 	"pluralkit/manager/internal/etcd"
 	"pluralkit/manager/internal/k8s"
-	"strconv"
 	"sync"
 	"syscall"
 	"time"
@@ -52,6 +51,12 @@ type GatewayConfig struct {
 	PodDefinition json.RawMessage
 }
 
+type VersionedGatewayConfig struct {
+	Prev GatewayConfig
+	Cur  GatewayConfig
+	Next GatewayConfig
+}
+
 // render helper function for GatewayConfig
 func (i *GatewayConfig) Render(w http.ResponseWriter, r *http.Request) error { return nil }
 
@@ -66,12 +71,10 @@ type Machine struct {
 	etcdClient   *etcd.Client
 	k8sClient    *k8s.Client
 
+	mu             sync.RWMutex
 	config         ManagerConfig
-	curGWConfig    GatewayConfig
-	prevGWConfig   GatewayConfig
-	nextGWConfig   GatewayConfig
+	gwConfig       VersionedGatewayConfig
 	cacheEndpoints []string
-	numShards      int
 	shardStatus    []ShardState
 }
 
@@ -146,14 +149,16 @@ func NewController(etcdCli *etcd.Client, k8sCli *k8s.Client, eventChan chan Even
 	val, err = etcdCli.Get(ctxGet, "gateway_config")
 	if err != nil {
 		m.logger.Info("gateway config does not exist in etcd")
-		m.curGWConfig = GatewayConfig{}
+		m.gwConfig = VersionedGatewayConfig{}
 	} else {
-		var config GatewayConfig
+		var config VersionedGatewayConfig
 		err = json.Unmarshal([]byte(val), &config)
 		if err != nil {
 			m.logger.Warn("error while parsing config! ", slog.Any("error", err))
 		} else {
-			m.curGWConfig = config
+			m.mu.Lock()
+			m.gwConfig = config
+			m.mu.Unlock()
 		}
 	}
 
@@ -164,19 +169,6 @@ func NewController(etcdCli *etcd.Client, k8sCli *k8s.Client, eventChan chan Even
 		err = json.Unmarshal([]byte(val), &m.cacheEndpoints)
 		if err != nil {
 			m.logger.Warn("error while parsing cache endpoints!", slog.Any("error", err))
-		}
-	}
-
-	val, err = etcdCli.Get(ctxGet, "num_shards")
-	if err != nil {
-		m.logger.Info("num shards does not exist in etcd")
-	} else {
-		valInt, err := strconv.Atoi(val)
-		if err != nil {
-			m.logger.Warn("error while parsing num shards!", slog.Any("error", err))
-		} else {
-			m.numShards = valInt
-			m.shardStatus = make([]ShardState, m.numShards)
 		}
 	}
 
@@ -204,9 +196,17 @@ func (m *Machine) SetConfig(configStr []byte) error {
 		return err
 	}
 
-	m.nextGWConfig = config
+	m.mu.Lock()
+	m.gwConfig.Next = config
+	m.mu.Unlock()
 
-	err = m.etcdClient.Put(context.Background(), "gateway_config", string(configStr))
+	conf, err := json.Marshal(m.gwConfig)
+	if err != nil {
+		m.logger.Warn("error while marshalling config", slog.Any("error", err))
+		return err
+	}
+
+	err = m.etcdClient.Put(context.Background(), "gateway_config", string(conf))
 	if err != nil {
 		m.logger.Warn("error while putting config", slog.Any("error", err))
 		return err
@@ -217,26 +217,36 @@ func (m *Machine) SetConfig(configStr []byte) error {
 
 // returns the current gw config
 func (m *Machine) GetCurrentConfig() GatewayConfig {
-	return m.curGWConfig
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.gwConfig.Cur
 }
 
 // returns the specified next gw config
 func (m *Machine) GetNextConfig() GatewayConfig {
-	return m.nextGWConfig
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.gwConfig.Next
 }
 
 // returns the current cache endpoints as a pointer/reference
-func (m *Machine) GetCacheEndpoints() *([]string) {
-	return &m.cacheEndpoints
+func (m *Machine) GetCacheEndpoint(i int) string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.cacheEndpoints[i]
 }
 
 // returns the current number of shards
-func (m *Machine) GetNumShards() *(int) {
-	return &m.numShards
+func (m *Machine) GetNumShards() int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.gwConfig.Cur.NumShards
 }
 
 // returns the current shard states
 func (m *Machine) GetShardStatus() []ShardState {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	return m.shardStatus
 }
 
@@ -247,6 +257,8 @@ func (m *Machine) UpdateShardStatus(status ShardState) error {
 	if err != nil {
 		return err
 	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	err = json.Unmarshal(statJson, &(m.shardStatus[status.ShardID]))
 	if err != nil {
 		return err
