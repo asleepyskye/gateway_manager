@@ -54,8 +54,6 @@ spec:
       requests:
         cpu: 1
     image: registry.den.vixen.lgbt/pluralkit/gateway_manager:latest
-    args:
-    - liveness
     livenessProbe:
       httpGet:
         path: /ping

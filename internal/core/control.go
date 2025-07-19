@@ -48,13 +48,14 @@ const (
 // helper struct for a gateway config
 type GatewayConfig struct {
 	NumShards     int
+	NumClusters   int
 	PodDefinition json.RawMessage
 }
 
 type VersionedGatewayConfig struct {
-	Prev GatewayConfig
-	Cur  GatewayConfig
-	Next GatewayConfig
+	Prev *GatewayConfig
+	Cur  *GatewayConfig
+	Next *GatewayConfig
 }
 
 // render helper function for GatewayConfig
@@ -71,7 +72,9 @@ type Machine struct {
 	etcdClient   *etcd.Client
 	k8sClient    *k8s.Client
 
-	mu             sync.RWMutex
+	confMu         sync.RWMutex
+	cacheMu        sync.RWMutex
+	statMu         sync.RWMutex
 	config         ManagerConfig
 	gwConfig       VersionedGatewayConfig
 	cacheEndpoints []string
@@ -156,9 +159,9 @@ func NewController(etcdCli *etcd.Client, k8sCli *k8s.Client, eventChan chan Even
 		if err != nil {
 			m.logger.Warn("error while parsing config! ", slog.Any("error", err))
 		} else {
-			m.mu.Lock()
+			m.confMu.Lock()
 			m.gwConfig = config
-			m.mu.Unlock()
+			m.confMu.Unlock()
 		}
 	}
 
@@ -184,21 +187,26 @@ func (m *Machine) SendEvent(event Event) {
 
 // sets the next gateway config for use on next deploy/rollout
 func (m *Machine) SetConfig(configStr []byte) error {
-	var config GatewayConfig
+	var config *GatewayConfig
 
 	if m.currentState != Monitor && m.currentState != Degraded {
 		return errors.New("cannot set config in current state")
 	}
 
-	err := json.Unmarshal(configStr, &config)
+	err := json.Unmarshal(configStr, config)
 	if err != nil {
 		m.logger.Warn("error while unmarshaling config", slog.Any("error", err))
 		return err
+	} else if config == nil {
+		m.logger.Warn("config is nil!")
+		return nil
 	}
 
-	m.mu.Lock()
+	config.NumClusters = (config.NumShards + m.config.MaxConcurrency - 1) / m.config.MaxConcurrency
+
+	m.confMu.Lock()
 	m.gwConfig.Next = config
-	m.mu.Unlock()
+	m.confMu.Unlock()
 
 	conf, err := json.Marshal(m.gwConfig)
 	if err != nil {
@@ -217,36 +225,36 @@ func (m *Machine) SetConfig(configStr []byte) error {
 
 // returns the current gw config
 func (m *Machine) GetCurrentConfig() GatewayConfig {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return m.gwConfig.Cur
+	m.confMu.RLock()
+	defer m.confMu.RUnlock()
+	return *m.gwConfig.Cur
 }
 
 // returns the specified next gw config
 func (m *Machine) GetNextConfig() GatewayConfig {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return m.gwConfig.Next
+	m.confMu.RLock()
+	defer m.confMu.RUnlock()
+	return *m.gwConfig.Next
 }
 
 // returns the current cache endpoints as a pointer/reference
 func (m *Machine) GetCacheEndpoint(i int) string {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
+	m.cacheMu.RLock()
+	defer m.cacheMu.RUnlock()
 	return m.cacheEndpoints[i]
 }
 
 // returns the current number of shards
 func (m *Machine) GetNumShards() int {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
+	m.confMu.RLock()
+	defer m.confMu.RUnlock()
 	return m.gwConfig.Cur.NumShards
 }
 
 // returns the current shard states
 func (m *Machine) GetShardStatus() []ShardState {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
+	m.statMu.RLock()
+	defer m.statMu.RUnlock()
 	return m.shardStatus
 }
 
@@ -257,8 +265,8 @@ func (m *Machine) UpdateShardStatus(status ShardState) error {
 	if err != nil {
 		return err
 	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.statMu.Lock()
+	defer m.statMu.Unlock()
 	err = json.Unmarshal(statJson, &(m.shardStatus[status.ShardID]))
 	if err != nil {
 		return err

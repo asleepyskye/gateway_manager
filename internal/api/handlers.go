@@ -149,10 +149,9 @@ func (a *API) GetCache(w http.ResponseWriter, r *http.Request) {
 		path += "/" + reqPath
 	}
 
-	shardID := (guildID >> 22) % *a.NumShards
+	shardID := (guildID >> 22) % a.Controller.GetNumShards()
 	clusterID := shardID / a.Config.MaxConcurrency
-
-	target := (*a.CacheEndpoints)[clusterID] + path
+	target := a.Controller.GetCacheEndpoint(clusterID) + path
 
 	req, err := http.NewRequest(http.MethodGet, target, nil)
 	if err != nil {

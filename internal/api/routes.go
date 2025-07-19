@@ -11,13 +11,11 @@ import (
 
 // Helper struct for API
 type API struct {
-	EtcdClient     *etcd.Client
-	Controller     *core.Machine
-	CacheEndpoints *[]string
-	NumShards      *int
-	httpClient     http.Client
-	Config         core.ManagerConfig
-	Logger         *slog.Logger
+	EtcdClient *etcd.Client
+	Controller *core.Machine
+	httpClient http.Client
+	Config     core.ManagerConfig
+	Logger     *slog.Logger
 }
 
 // Helper func for creating an API struct

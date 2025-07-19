@@ -44,5 +44,3 @@ spec:
           valueFrom:
             fieldRef:
               fieldPath: metadata.name
-        - name: pluralkit__manager_url
-          value: 'pluralkit-manager:5020'
