@@ -13,7 +13,7 @@ type Proxy struct {
 	httpClient http.Client
 	Config     core.ProxyConfig
 	Logger     *slog.Logger
-	endpoints  []string
+	endpoints  []core.ProxyEndpoint
 	numShards  int
 }
 
@@ -24,6 +24,7 @@ func NewProxy(config core.ProxyConfig, logger *slog.Logger) *Proxy {
 		httpClient: http.Client{},
 		Config:     config,
 		Logger:     moduleLogger,
+		endpoints:  make([]core.ProxyEndpoint, 255), //todo: don't harcode this lol
 	}
 }
 

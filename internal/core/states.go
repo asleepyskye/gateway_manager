@@ -225,11 +225,6 @@ func updateCacheEndpoint(ctx context.Context, m *Machine, index int, endpoint st
 	return nil
 }
 
-type ProxyEndpoint struct {
-	index    int
-	endpoint string
-}
-
 func updateCacheEndpointBulk(ctx context.Context, m *Machine, endpoints []ProxyEndpoint) error {
 	k8endpoints, err := m.k8sClient.GetServiceEndpoints(ctx, "pluralkit-gateway-proxy-headless")
 	if err != nil {
@@ -554,7 +549,7 @@ func DeployState(m *Machine) Event {
 	m.logger.Info("setting event targets")
 	httpClient := http.Client{Timeout: 3 * time.Second}
 	for _, val := range endpoints {
-		err = changeEventTarget(httpClient, val.endpoint, m.config.EventTarget)
+		err = changeEventTarget(httpClient, val.Endpoint, m.config.EventTarget)
 		if err != nil {
 			m.logger.Error("error while setting runtime_config!", slog.Any("err", err))
 			return EventError
