@@ -5,12 +5,9 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"strconv"
-	"strings"
 
 	"pluralkit/manager/internal/core"
 
-	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/render"
 )
 
@@ -128,58 +125,4 @@ Sends a deploy event command to start a deploy on manager
 func (a *API) SetDeploy(w http.ResponseWriter, r *http.Request) {
 	a.Controller.SendEvent(core.EventDeployCmd)
 	w.Write([]byte(""))
-}
-
-/*
-Handler for /cache/guilds/:id/*path
-
-Acts as a proxy to the appropriate gateway instance based on the guild ID.
-*/
-func (a *API) GetCache(w http.ResponseWriter, r *http.Request) {
-	guildID, err := strconv.Atoi(chi.URLParam(r, "id"))
-	if err != nil {
-		http.Error(w, "error while reading param", 500)
-		return
-	}
-
-	reqPath := strings.TrimRight(chi.URLParam(r, "*"), "/")
-
-	path := "/guilds/" + strconv.Itoa(guildID)
-	if len(reqPath) > 0 {
-		path += "/" + reqPath
-	}
-
-	shardID := (guildID >> 22) % a.Controller.GetNumShards()
-	clusterID := shardID / a.Config.MaxConcurrency
-	target := a.Controller.GetCacheEndpoint(clusterID) + path
-
-	req, err := http.NewRequest(http.MethodGet, target, nil)
-	if err != nil {
-		http.Error(w, "error while creating request", 500)
-		return
-	}
-	for header, values := range r.Header {
-		for _, value := range values {
-			req.Header.Add(header, value)
-		}
-	}
-
-	resp, err := a.httpClient.Do(req)
-	if err != nil {
-		http.Error(w, "error while requesting data", 500)
-		return
-	}
-	defer resp.Body.Close()
-	w.WriteHeader(resp.StatusCode)
-	for header, values := range resp.Header {
-		for _, value := range values {
-			w.Header().Add(header, value)
-		}
-	}
-
-	_, err = io.Copy(w, resp.Body)
-	if err != nil {
-		http.Error(w, "error while copying response", 500)
-		return
-	}
 }

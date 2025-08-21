@@ -45,7 +45,4 @@ func (a *API) SetupRoutes(router *chi.Mux) {
 		r.Post("/rollout", a.SetRollout)
 		r.Post("/deploy", a.SetDeploy)
 	})
-
-	router.Get("/cache/guilds/{id}", a.GetCache)
-	router.Get("/cache/guilds/{id}/*", a.GetCache)
 }

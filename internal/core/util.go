@@ -41,6 +41,19 @@ type ManagerConfig struct {
 	SentryURL      string    `env:"pluralkit__sentry_url"`
 	LogLevel       SlogLevel `env:"pluralkit__consoleloglevel" envDefault:"info"`
 	SentryLogLevel SlogLevel `env:"pluralkit__sentryloglevel" envDefault:"error"`
+
+	ProxyReplicas  int32  `env:"pluralkit__manager__proxy_replicas" envDefault:"2"`
+	ProxyImage     string `env:"pluralkit__manager__proxy_image,required"`
+	ProxySentryURL string `env:"pluralkit__manager__proxy_sentry_url"`
+}
+
+type ProxyConfig struct {
+	MaxConcurrency int    `env:"pluralkit__discord__max_concurrency,required"`
+	BindAddr       string `env:"pluralkit__proxy__addr" envDefault:"0.0.0.0:5000"`
+
+	SentryURL      string    `env:"pluralkit__sentry_url"`
+	LogLevel       SlogLevel `env:"pluralkit__consoleloglevel" envDefault:"info"`
+	SentryLogLevel SlogLevel `env:"pluralkit__sentryloglevel" envDefault:"error"`
 }
 
 type ShardState struct {

@@ -50,6 +50,7 @@ type GatewayConfig struct {
 	NumShards     int
 	NumClusters   int
 	PodDefinition json.RawMessage
+	RevisionID    string
 }
 
 type VersionedGatewayConfig struct {
@@ -72,13 +73,11 @@ type Machine struct {
 	etcdClient   *etcd.Client
 	k8sClient    *k8s.Client
 
-	confMu         sync.RWMutex
-	cacheMu        sync.RWMutex
-	statMu         sync.RWMutex
-	config         ManagerConfig
-	gwConfig       VersionedGatewayConfig
-	cacheEndpoints []string
-	shardStatus    []ShardState
+	confMu      sync.RWMutex
+	statMu      sync.RWMutex
+	config      ManagerConfig
+	gwConfig    VersionedGatewayConfig
+	shardStatus []ShardState
 }
 
 // helper function for creating a new state machine/controller
@@ -92,10 +91,9 @@ func NewController(etcdCli *etcd.Client, k8sCli *k8s.Client, eventChan chan Even
 		config:       cfg,
 		logger:       moduleLogger,
 
-		eventChannel:   eventChan,
-		etcdClient:     etcdCli,
-		k8sClient:      k8sCli,
-		cacheEndpoints: make([]string, 0, 256),
+		eventChannel: eventChan,
+		etcdClient:   etcdCli,
+		k8sClient:    k8sCli,
 	}
 
 	m.stateFuncs = map[State]StateFunc{
@@ -165,16 +163,6 @@ func NewController(etcdCli *etcd.Client, k8sCli *k8s.Client, eventChan chan Even
 		}
 	}
 
-	val, err = etcdCli.Get(ctxGet, "cache_endpoints")
-	if err != nil {
-		m.logger.Info("cache endpoints does not exist in etcd")
-	} else {
-		err = json.Unmarshal([]byte(val), &m.cacheEndpoints)
-		if err != nil {
-			m.logger.Warn("error while parsing cache endpoints!", slog.Any("error", err))
-		}
-	}
-
 	signal.Notify(m.sigChannel, syscall.SIGTERM, syscall.SIGINT)
 
 	return m
@@ -235,13 +223,6 @@ func (m *Machine) GetNextConfig() GatewayConfig {
 	m.confMu.RLock()
 	defer m.confMu.RUnlock()
 	return *m.gwConfig.Next
-}
-
-// returns the current cache endpoints as a pointer/reference
-func (m *Machine) GetCacheEndpoint(i int) string {
-	m.cacheMu.RLock()
-	defer m.cacheMu.RUnlock()
-	return m.cacheEndpoints[i]
 }
 
 // returns the current number of shards

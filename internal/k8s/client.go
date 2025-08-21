@@ -3,9 +3,12 @@ package k8s
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	v1 "k8s.io/api/discovery/v1"
 	k8sErrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
@@ -42,8 +45,8 @@ func NewClient(namespace string, creatorName string) (*Client, error) {
 }
 
 // TODO: document this function.
-func (c *Client) GetAllPodsNames() ([]string, error) {
-	podList, err := c.k8sClient.CoreV1().Pods(c.namespace).List(context.TODO(), metav1.ListOptions{
+func (c *Client) GetAllPodsNames(ctx context.Context) ([]string, error) {
+	podList, err := c.k8sClient.CoreV1().Pods(c.namespace).List(ctx, metav1.ListOptions{
 		LabelSelector: c.labelSelector,
 	})
 	if err != nil {
@@ -58,8 +61,8 @@ func (c *Client) GetAllPodsNames() ([]string, error) {
 }
 
 // TODO: document this function.
-func (c *Client) GetNumPods() (int, error) {
-	podList, err := c.k8sClient.CoreV1().Pods(c.namespace).List(context.TODO(), metav1.ListOptions{
+func (c *Client) GetNumPods(ctx context.Context) (int, error) {
+	podList, err := c.k8sClient.CoreV1().Pods(c.namespace).List(ctx, metav1.ListOptions{
 		LabelSelector: c.labelSelector,
 	})
 	if err != nil {
@@ -69,14 +72,23 @@ func (c *Client) GetNumPods() (int, error) {
 }
 
 // TODO: document this function.
-func (c *Client) CreateService(service *corev1.Service) (*corev1.Service, error) {
+func (c *Client) GetServiceEndpoints(ctx context.Context, name string) (*v1.EndpointSliceList, error) {
+	disc := c.k8sClient.DiscoveryV1()
+	endpoints, err := disc.EndpointSlices(c.namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: fmt.Sprintf("kubernetes.io/service-name=%s", name),
+	})
+	return endpoints, err
+}
+
+// TODO: document this function.
+func (c *Client) CreateService(ctx context.Context, service *corev1.Service) (*corev1.Service, error) {
 	service.Namespace = c.namespace
 	if service.ObjectMeta.Labels == nil {
 		service.ObjectMeta.Labels = make(map[string]string)
 	}
 	service.ObjectMeta.Labels["created-by"] = c.creatorName
 
-	createdService, err := c.k8sClient.CoreV1().Services(c.namespace).Create(context.TODO(), service, metav1.CreateOptions{})
+	createdService, err := c.k8sClient.CoreV1().Services(c.namespace).Create(ctx, service, metav1.CreateOptions{})
 	if err != nil {
 		return nil, err
 	}
@@ -84,14 +96,29 @@ func (c *Client) CreateService(service *corev1.Service) (*corev1.Service, error)
 }
 
 // TODO: document this function.
-func (c *Client) CreatePod(pod *corev1.Pod) (*corev1.Pod, error) {
+func (c *Client) CreateDeployment(ctx context.Context, deployment *appsv1.Deployment) (*appsv1.Deployment, error) {
+	deployment.Namespace = c.namespace
+	if deployment.ObjectMeta.Labels == nil {
+		deployment.ObjectMeta.Labels = make(map[string]string)
+	}
+	deployment.ObjectMeta.Labels["created-by"] = c.creatorName
+
+	createdDeployment, err := c.k8sClient.AppsV1().Deployments(c.namespace).Create(ctx, deployment, metav1.CreateOptions{})
+	if err != nil {
+		return nil, err
+	}
+	return createdDeployment, nil
+}
+
+// TODO: document this function.
+func (c *Client) CreatePod(ctx context.Context, pod *corev1.Pod) (*corev1.Pod, error) {
 	pod.Namespace = c.namespace
 	if pod.ObjectMeta.Labels == nil {
 		pod.ObjectMeta.Labels = make(map[string]string)
 	}
 	pod.ObjectMeta.Labels["created-by"] = c.creatorName
 
-	createdPod, err := c.k8sClient.CoreV1().Pods(c.namespace).Create(context.TODO(), pod, metav1.CreateOptions{})
+	createdPod, err := c.k8sClient.CoreV1().Pods(c.namespace).Create(ctx, pod, metav1.CreateOptions{})
 	if err != nil {
 		return nil, err
 	}
@@ -99,13 +126,13 @@ func (c *Client) CreatePod(pod *corev1.Pod) (*corev1.Pod, error) {
 }
 
 // TODO: document this function.
-func (c *Client) DeletePod(name string) error {
+func (c *Client) DeletePod(ctx context.Context, name string) error {
 	deletePolicy := metav1.DeletePropagationForeground
 	deleteOptions := metav1.DeleteOptions{
 		PropagationPolicy: &deletePolicy,
 	}
 
-	err := c.k8sClient.CoreV1().Pods(c.namespace).Delete(context.TODO(), name, deleteOptions)
+	err := c.k8sClient.CoreV1().Pods(c.namespace).Delete(ctx, name, deleteOptions)
 	if err != nil {
 		return err
 	}
@@ -114,7 +141,7 @@ func (c *Client) DeletePod(name string) error {
 }
 
 // TODO: document this function.
-func (c *Client) DeleteAllPods() error {
+func (c *Client) DeleteAllPods(ctx context.Context) error {
 	deletePolicy := metav1.DeletePropagationForeground
 	deleteOptions := metav1.DeleteOptions{
 		PropagationPolicy: &deletePolicy,
@@ -123,7 +150,7 @@ func (c *Client) DeleteAllPods() error {
 		LabelSelector: c.labelSelector,
 	}
 
-	err := c.k8sClient.CoreV1().Pods(c.namespace).DeleteCollection(context.TODO(), deleteOptions, listOptions)
+	err := c.k8sClient.CoreV1().Pods(c.namespace).DeleteCollection(ctx, deleteOptions, listOptions)
 	if err != nil {
 		return err
 	}
