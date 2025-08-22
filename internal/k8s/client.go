@@ -11,6 +11,7 @@ import (
 	v1 "k8s.io/api/discovery/v1"
 	k8sErrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	k8sLabels "k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -34,7 +35,7 @@ func NewClient(namespace string, creatorName string) (*Client, error) {
 		return nil, err
 	}
 
-	selector := "created-by=" + creatorName
+	selector := "managed-by=" + creatorName
 
 	return &Client{
 		k8sClient:     clientset,
@@ -60,6 +61,39 @@ func (c *Client) GetAllPodsNames(ctx context.Context) ([]string, error) {
 	return podNames, nil
 }
 
+func (c *Client) getSelector(labels string) (k8sLabels.Selector, error) {
+	var selector k8sLabels.Selector
+	var err error
+	if len(labels) != 0 {
+		selector, err = k8sLabels.Parse(c.labelSelector + "," + labels)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		selector, err = k8sLabels.Parse(c.labelSelector)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return selector, nil
+}
+
+// TODO: document this function.
+func (c *Client) GetPods(ctx context.Context, labels string) (*corev1.PodList, error) {
+	selector, err := c.getSelector(labels)
+	if err != nil {
+		return nil, err
+	}
+
+	podList, err := c.k8sClient.CoreV1().Pods(c.namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: selector.String(),
+	})
+	if err != nil {
+		return nil, err
+	}
+	return podList, nil
+}
+
 // TODO: document this function.
 func (c *Client) GetNumPods(ctx context.Context) (int, error) {
 	podList, err := c.k8sClient.CoreV1().Pods(c.namespace).List(ctx, metav1.ListOptions{
@@ -69,6 +103,18 @@ func (c *Client) GetNumPods(ctx context.Context) (int, error) {
 		return 0, err
 	}
 	return len(podList.Items), nil
+}
+
+func (c *Client) PodExists(ctx context.Context, name string) (bool, error) {
+	listOptions := metav1.ListOptions{
+		LabelSelector: c.labelSelector,
+		FieldSelector: fmt.Sprintf("metadata.name=%s", name),
+	}
+	pods, err := c.k8sClient.CoreV1().Pods(c.namespace).List(ctx, listOptions)
+	if err != nil {
+		return false, err
+	}
+	return (len(pods.Items) > 0), nil
 }
 
 // TODO: document this function.

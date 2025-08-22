@@ -47,7 +47,20 @@ func changeEventTarget(client http.Client, url string, eventTarget string) error
 	return nil
 }
 
-func addEnvs(m *Machine, pod *corev1.Pod) {
+func (m *Machine) generatePod(index int) (*corev1.Pod, error) {
+	var pod corev1.Pod
+	err := json.Unmarshal(m.gwConfig.Cur.PodDefinition, &pod)
+	if err != nil {
+		m.logger.Error("error while parsing config!", slog.Any("error", err))
+		return nil, err
+	}
+	pod.Name = fmt.Sprintf("pluralkit-gateway-%s-%d", m.gwConfig.Cur.RevisionID, index)
+	pod.Labels["app"] = "pluralkit-gateway"
+	pod.Annotations["gateway-index"] = string(index)
+	pod.Annotations["revision-id"] = string(index)
+
+	pod.Spec.Hostname = pod.Name
+	pod.Spec.Subdomain = "gw-svc"
 	pod.Spec.Containers[0].Env = append(pod.Spec.Containers[0].Env,
 		corev1.EnvVar{
 			Name:  "pluralkit__discord__cluster__total_shards",
@@ -70,6 +83,7 @@ func addEnvs(m *Machine, pod *corev1.Pod) {
 			Value: "pluralkit-manager.pluralkit-gateway.svc.cluster.local:5020", //TODO: don't hardcode this
 		},
 	)
+	return &pod, nil
 }
 
 func ensureService(ctx context.Context, m *Machine) error {
@@ -310,14 +324,6 @@ func RolloutState(m *Machine) Event {
 		return EventError
 	}
 
-	var pod corev1.Pod
-	err := json.Unmarshal(m.gwConfig.Next.PodDefinition, &pod)
-	if err != nil {
-		m.logger.Error("error while parsing config!", slog.Any("error", err))
-		return EventError
-	}
-	addEnvs(m, &pod)
-
 	if m.gwConfig.Cur.NumShards != m.gwConfig.Next.NumShards {
 		m.logger.Error("shard count in config is different from current deployment!")
 		return EventError
@@ -342,13 +348,13 @@ func RolloutState(m *Machine) Event {
 		}
 	}
 
-	expectedNum := m.gwConfig.Cur.NumClusters
+	numClusters := m.gwConfig.Cur.NumClusters
 	numPods, err := m.k8sClient.GetNumPods(ctx)
 	if err != nil {
 		m.logger.Error("error while getting num pods!")
 		return EventError
 	}
-	if numPods != expectedNum || numPods != expectedNum+1 {
+	if numPods != numClusters || numPods != numClusters+1 {
 		m.logger.Error("unexpected number of pods!")
 		return EventError
 	}
@@ -371,26 +377,30 @@ func RolloutState(m *Machine) Event {
 	m.saveConfigToEtcd()
 
 	//begin rollout!
+	m.status.RolloutTotal = numClusters
 	httpClient := http.Client{Timeout: 3 * time.Second}
 	var oldPod, newPod, target string
-	for i := startIndex; i < m.gwConfig.Cur.NumClusters; i++ {
+	for i := startIndex; i < numClusters; i++ {
 		m.etcdClient.Put(ctx, "rollout_index", strconv.Itoa(i))
-		m.logger.Info("rolling out", slog.Int("rollout_index", i), slog.Int("num_replicas", m.gwConfig.Cur.NumClusters))
+		m.status.RolloutIDX = i
+		m.logger.Info("rolling out", slog.Int("rollout_index", i), slog.Int("num_replicas", numClusters))
 
 		oldPod = fmt.Sprintf("pluralkit-gateway-%s-%d", m.gwConfig.Prev.RevisionID, i)
-		newPod = fmt.Sprintf("pluralkit-gateway-%s-%d", m.gwConfig.Cur.RevisionID, i)
-		pod.Name = newPod
-		pod.Spec.Hostname = pod.Name
-		pod.Spec.Subdomain = "gw-svc"
+		pod, err := m.generatePod(i)
+		if err != nil {
+			m.etcdClient.Put(ctx, "rollout_status", "error")
+			m.logger.Error("error while generating pod", slog.Any("error", err))
+			return EventError
+		}
 
 		m.etcdClient.Put(ctx, "rollout_status", "creating")
 		switch status {
 		case "starting", "creating":
 			m.logger.Info("creating pod", slog.String("pod", newPod))
-			_, err = m.k8sClient.CreatePod(ctx, &pod)
+			_, err = m.k8sClient.CreatePod(ctx, pod)
 			if err != nil {
 				m.etcdClient.Put(ctx, "rollout_status", "error")
-				m.logger.Error("error while creating pods in rollout!", slog.Any("error", err))
+				m.logger.Error("error while creating pods", slog.Any("error", err))
 				return EventError
 			}
 
@@ -402,7 +412,7 @@ func RolloutState(m *Machine) Event {
 			err = m.k8sClient.WaitForReady(ctx, []string{newPod}, m.config.EventWaitTimeout)
 			if err != nil {
 				m.etcdClient.Put(ctx, "rollout_status", "error")
-				m.logger.Error("error while waiting for pod in rollout!", slog.Any("error", err))
+				m.logger.Error("error while waiting for pod", slog.Any("error", err))
 				m.k8sClient.DeletePod(ctx, newPod)
 				return EventError
 			}
@@ -416,7 +426,7 @@ func RolloutState(m *Machine) Event {
 			err = changeEventTarget(httpClient, target, "")
 			if err != nil {
 				m.etcdClient.Put(ctx, "rollout_status", "error")
-				m.logger.Error("error while deleting old runtime_config!", slog.Any("err", err))
+				m.logger.Error("error while deleting old runtime_config", slog.Any("err", err))
 				m.k8sClient.DeletePod(ctx, newPod)
 				return EventError
 			}
@@ -426,7 +436,7 @@ func RolloutState(m *Machine) Event {
 
 		case "switching_new":
 			m.logger.Info("switching event target on new pod")
-			target = fmt.Sprintf("http://%s.%s:5000", newPod, pod.Spec.Subdomain)
+			target = fmt.Sprintf("http://%s.%s.%s:5000", newPod, pod.Spec.Subdomain, pod.Namespace)
 			updateCacheEndpoint(ctx, m, i, target)
 
 			err = changeEventTarget(httpClient, target, m.config.EventTarget)
@@ -482,13 +492,6 @@ func DeployState(m *Machine) Event {
 		return EventError
 	}
 
-	var pod corev1.Pod
-	err := json.Unmarshal(m.gwConfig.Next.PodDefinition, &pod)
-	if err != nil {
-		m.logger.Error("error while parsing config!", slog.Any("error", err))
-		return EventError
-	}
-	addEnvs(m, &pod)
 	m.gwConfig.Next.RevisionID = GenerateRandomID()
 
 	//delete all pods created by the manager in the namespace, if they exist and wait
@@ -532,23 +535,24 @@ func DeployState(m *Machine) Event {
 	m.saveConfigToEtcd()
 
 	//begin deployment!
-	m.statMu.Lock()
-	m.shardStatus = make([]ShardState, m.gwConfig.Cur.NumShards)
-	m.statMu.Unlock()
+	m.makeShardsSlice()
 	podNames := make([]string, m.gwConfig.Cur.NumClusters)
 	endpoints := make(map[int]string, m.gwConfig.Cur.NumClusters)
 	for i := range m.gwConfig.Cur.NumClusters {
-		pod.Name = fmt.Sprintf("pluralkit-gateway-%s-%d", m.gwConfig.Cur.RevisionID, i)
-		pod.Spec.Hostname = pod.Name
-		pod.Spec.Subdomain = "gw-svc"
+		pod, err := m.generatePod(i)
+		if err != nil {
+			m.etcdClient.Put(ctx, "rollout_status", "error")
+			m.logger.Error("error while generating pod", slog.Any("error", err))
+			return EventError
+		}
 
-		_, err := m.k8sClient.CreatePod(ctx, &pod)
+		_, err = m.k8sClient.CreatePod(ctx, pod)
 		if err != nil {
 			m.logger.Error("error while creating pod in deploy!", slog.Any("err", err))
 			return EventError
 		}
 		podNames[i] = pod.Name
-		endpoints[i] = fmt.Sprintf("http://%s.%s:5000", pod.Spec.Hostname, pod.Spec.Subdomain)
+		endpoints[i] = fmt.Sprintf("http://%s.%s.%s:5000", pod.Spec.Hostname, pod.Spec.Subdomain, pod.Namespace)
 		time.Sleep(50 * time.Millisecond) //sleep a short amount of time
 	}
 

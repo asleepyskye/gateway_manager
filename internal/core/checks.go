@@ -37,7 +37,7 @@ func CheckHealthNetwork(ctx context.Context, m *Machine) bool {
 	client := http.Client{}
 	id := m.GetCurrentConfig().RevisionID
 	for i := 0; i < m.GetCurrentConfig().NumClusters; i++ {
-		target := fmt.Sprintf("http://pluralkit-gateway-%s-%d:5000/up", id, i)
+		target := fmt.Sprintf("http://pluralkit-gateway-%s-%d.gw-svc.pluralkit-gateway:5000/up", id, i)
 		m.logger.Info("chk health", slog.Any("target", target))
 		req, _ := http.NewRequest("GET", target, nil)
 		resp, err := client.Do(req)
@@ -57,7 +57,7 @@ func CheckHeartbeat(ctx context.Context, m *Machine) bool {
 	for c := range numClusters {
 		numHeartbeated := 0
 		for s := range m.config.MaxConcurrency {
-			shard := m.shardStatus[(c*m.config.MaxConcurrency)+s]
+			shard := m.status.Shards[(c*m.config.MaxConcurrency)+s]
 			ht := time.Unix(int64(shard.LastHeartbeat), 0)
 			if time.Now().Before(ht.Add(time.Duration(5) * time.Minute)) {
 				numHeartbeated++

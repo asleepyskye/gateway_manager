@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
 	"pluralkit/manager/internal/etcd"
 	"pluralkit/manager/internal/k8s"
+	"strconv"
 	"sync"
 	"syscall"
 	"time"
@@ -80,11 +82,11 @@ type Machine struct {
 	etcdClient   *etcd.Client
 	k8sClient    *k8s.Client
 
-	confMu      sync.RWMutex
-	statMu      sync.RWMutex
-	config      ManagerConfig
-	gwConfig    VersionedGatewayConfig
-	shardStatus []ShardState
+	confMu   sync.RWMutex
+	statMu   sync.RWMutex
+	config   ManagerConfig
+	gwConfig VersionedGatewayConfig
+	status   ManagerStatus
 }
 
 // helper function for creating a new state machine/controller
@@ -183,9 +185,7 @@ func NewController(etcdCli *etcd.Client, k8sCli *k8s.Client, eventChan chan Even
 	}
 
 	if m.gwConfig.Cur != nil {
-		m.statMu.Lock()
-		m.shardStatus = make([]ShardState, m.gwConfig.Cur.NumShards)
-		m.statMu.Unlock()
+		m.makeShardsSlice()
 	}
 
 	signal.Notify(m.sigChannel, syscall.SIGTERM, syscall.SIGINT)
@@ -277,11 +277,52 @@ func (m *Machine) GetNumShards() int {
 	return m.gwConfig.Cur.NumShards
 }
 
-// returns the current shard states
-func (m *Machine) GetShardStatus() []ShardState {
+// returns the current status of manager
+func (m *Machine) GetStatus() ManagerStatus {
 	m.statMu.RLock()
 	defer m.statMu.RUnlock()
-	return m.shardStatus
+	return m.status
+}
+
+// returns the current proxy endpoints
+func (m *Machine) GetEndpoints() (map[int]string, error) {
+	if m.gwConfig.Cur == nil {
+		return make(map[int]string, 0), nil
+	}
+	ctx := context.Background()
+	endpoints := make(map[int]string, m.gwConfig.Cur.NumClusters)
+	pods, err := m.k8sClient.GetPods(ctx, "app=pluralkit-gateway")
+	if err != nil {
+		return endpoints, err
+	}
+
+	for _, pod := range pods.Items {
+		revision := pod.Annotations["revision-id"]
+		index, err := strconv.Atoi(pod.Annotations["gateway-index"])
+		if err != nil {
+			return endpoints, err
+		}
+
+		target := fmt.Sprintf("http://%s.%s.%s:5000", pod.Spec.Hostname, pod.Spec.Subdomain, pod.Namespace)
+
+		switch m.currentState {
+		case Rollout:
+			if m.gwConfig.Prev == nil {
+				return endpoints, errors.New("prev config not set")
+			}
+			//just switch to the new pod now to avoid race conditions -- we shouldn't really be here anyways
+			if revision == m.gwConfig.Prev.RevisionID && index == m.status.RolloutIDX {
+				continue
+			}
+		case Rollback:
+			if revision == m.gwConfig.Cur.RevisionID && index == m.status.RolloutIDX {
+				continue
+			}
+		}
+
+		endpoints[index] = target
+	}
+	return endpoints, nil
 }
 
 // updates/patches the status of a given shard
@@ -293,11 +334,21 @@ func (m *Machine) UpdateShardStatus(status ShardState) error {
 	}
 	m.statMu.Lock()
 	defer m.statMu.Unlock()
-	err = json.Unmarshal(statJson, &(m.shardStatus[status.ShardID]))
+	err = json.Unmarshal(statJson, &(m.status.Shards[status.ShardID]))
 	if err != nil {
 		return err
 	}
 	return nil
+}
+
+func (m *Machine) makeShardsSlice() {
+	m.statMu.Lock()
+	defer m.statMu.Unlock()
+	m.status.Shards = make([]ShardState, m.gwConfig.Cur.NumShards)
+	for i := 0; i < m.gwConfig.Cur.NumShards; i++ {
+		m.status.Shards[i].ShardID = int32(i)
+		m.status.Shards[i].ClusterID = int32(i / m.config.MaxConcurrency)
+	}
 }
 
 // helper function for looking up the next state given an event
@@ -336,6 +387,7 @@ func (m *Machine) Run(wg *sync.WaitGroup) {
 		//we should probably check for errors here?
 		//but then what do we do? we rely heavily on etcd for safety, should we shutdown?
 		m.etcdClient.Put(ctx, "current_state", string(m.currentState))
+		m.status.Status = string(m.currentState)
 
 		//get the next state
 		stateHandler, ok := m.stateFuncs[m.currentState]

@@ -53,6 +53,7 @@ type ProxyConfig struct {
 	SentryURL      string    `env:"pluralkit__sentry_url"`
 	LogLevel       SlogLevel `env:"pluralkit__consoleloglevel" envDefault:"info"`
 	SentryLogLevel SlogLevel `env:"pluralkit__sentryloglevel" envDefault:"error"`
+	ManagerURL     string    `env:"pluralkit__manager_url" envDefault:"pluralkit-manager.pluralkit-gateway.svc.cluster.local:5020"`
 }
 
 type ShardState struct {
@@ -65,8 +66,11 @@ type ShardState struct {
 	ClusterID          int32 `json:"cluster_id"`
 }
 
-type ShardStateList struct {
-	Shards []ShardState `json:"shards"`
+type ManagerStatus struct {
+	Status       string       `json:"status"`
+	RolloutIDX   int          `json:"rollout_index,omitempty"`
+	RolloutTotal int          `json:"rollout_total,omitempty"`
+	Shards       []ShardState `json:"shards"`
 }
 
 const alphanumeric = "abcdefghijklmnopqrstuvwxyz0123456789"

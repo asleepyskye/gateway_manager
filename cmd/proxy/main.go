@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"log"
 	"log/slog"
 	"net/http"
@@ -12,12 +13,26 @@ import (
 	sentryslog "github.com/getsentry/sentry-go/slog"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/go-chi/httplog/v3"
 	"github.com/go-chi/render"
 	slogmulti "github.com/samber/slog-multi"
 
 	"pluralkit/manager/internal/core"
 	Proxy "pluralkit/manager/internal/proxy"
 )
+
+func resetEndpoints(p *Proxy.Proxy) error {
+	client := http.Client{}
+	target := fmt.Sprintf("http://%s/proxy/endpoints", p.Config.ManagerURL)
+	req, _ := http.NewRequest("GET", target, nil)
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	return nil
+}
 
 func main() {
 	//load config from envs
@@ -56,6 +71,13 @@ func main() {
 	router := chi.NewRouter()
 	router.Use(middleware.Recoverer)
 	router.Use(render.SetContentType(render.ContentTypeJSON))
+
+	router.Use(httplog.RequestLogger(logger, &httplog.Options{
+		Level:           slog.LevelInfo,
+		RecoverPanics:   true,
+		LogRequestBody:  func(req *http.Request) bool { return true },
+		LogResponseBody: func(req *http.Request) bool { return true },
+	}))
 
 	proxyInstance := Proxy.NewProxy(cfg, logger)
 	proxyInstance.SetupRoutes(router)

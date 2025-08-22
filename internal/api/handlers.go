@@ -23,11 +23,26 @@ func (a *API) Ping(w http.ResponseWriter, r *http.Request) {
 /*
 Handler for /status
 
-returns the status of all shards
+returns the status of manager
 */
 func (a *API) GetStatus(w http.ResponseWriter, r *http.Request) {
-	shards := a.Controller.GetShardStatus()
+	shards := a.Controller.GetStatus()
 	render.JSON(w, r, shards)
+}
+
+/*
+Handler for /proxy/endpoints
+
+returns the endpoints for the proxy to use
+*/
+func (a *API) GetEndpoints(w http.ResponseWriter, r *http.Request) {
+	endpoints, err := a.Controller.GetEndpoints()
+	if err != nil {
+		http.Error(w, "error while getting endpoints", 500)
+		a.Logger.Warn("error while getting endpoints", slog.Any("error", err))
+		return
+	}
+	render.JSON(w, r, endpoints)
 }
 
 /*
@@ -40,7 +55,7 @@ func (a *API) SetShardStatus(w http.ResponseWriter, r *http.Request) {
 	data, err := io.ReadAll(r.Body)
 	if err != nil {
 		http.Error(w, "error while reading request body", 500)
-		a.Logger.Warn("error while reading request body in SetClusterStatus", slog.Any("error", err))
+		a.Logger.Warn("error while reading request body", slog.Any("error", err))
 		return
 	}
 	err = json.Unmarshal(data, &state)
