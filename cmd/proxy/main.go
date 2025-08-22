@@ -1,7 +1,10 @@
 package main
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"log"
 	"log/slog"
 	"net/http"
@@ -13,7 +16,6 @@ import (
 	sentryslog "github.com/getsentry/sentry-go/slog"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
-	"github.com/go-chi/httplog/v3"
 	"github.com/go-chi/render"
 	slogmulti "github.com/samber/slog-multi"
 
@@ -29,9 +31,17 @@ func resetEndpoints(p *Proxy.Proxy) error {
 	if err != nil {
 		return err
 	}
+	if resp.StatusCode != 200 {
+		return errors.New("non-200 status code")
+	}
 	defer resp.Body.Close()
 
-	return nil
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+	err = json.Unmarshal(data, &p.EndpointsConfig)
+	return err
 }
 
 func main() {
@@ -39,7 +49,7 @@ func main() {
 	var cfg core.ProxyConfig
 	err := env.Parse(&cfg)
 	if err != nil {
-		slog.Error("error while loading envs!", slog.Any("error", err))
+		slog.Error("error while loading envs", slog.Any("error", err))
 		os.Exit(1)
 	}
 
@@ -72,19 +82,17 @@ func main() {
 	router.Use(middleware.Recoverer)
 	router.Use(render.SetContentType(render.ContentTypeJSON))
 
-	router.Use(httplog.RequestLogger(logger, &httplog.Options{
-		Level:           slog.LevelInfo,
-		RecoverPanics:   true,
-		LogRequestBody:  func(req *http.Request) bool { return true },
-		LogResponseBody: func(req *http.Request) bool { return true },
-	}))
-
 	proxyInstance := Proxy.NewProxy(cfg, logger)
 	proxyInstance.SetupRoutes(router)
+
+	err = resetEndpoints(proxyInstance)
+	if err != nil {
+		logger.Error("error while resetting proxy endpoints", slog.Any("error", err))
+	}
 
 	logger.Info("starting http proxy on", slog.String("address", cfg.BindAddr))
 	err = http.ListenAndServe(cfg.BindAddr, router)
 	if err != nil {
-		logger.Error("error while running http router!", slog.Any("error", err))
+		logger.Error("error while running http router", slog.Any("error", err))
 	}
 }

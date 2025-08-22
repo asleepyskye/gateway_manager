@@ -307,15 +307,26 @@ func (m *Machine) GetEndpoints() (map[int]string, error) {
 
 		switch m.currentState {
 		case Rollout:
-			if m.gwConfig.Prev == nil {
-				return endpoints, errors.New("prev config not set")
+			if m.gwConfig.Cur == nil {
+				return endpoints, errors.New("config not set")
+			}
+			if m.status.RolloutIDX == nil {
+				//this shouldn't be nil, but just in case
+				return endpoints, errors.New("rollout idx is nil")
 			}
 			//just switch to the new pod now to avoid race conditions -- we shouldn't really be here anyways
-			if revision == m.gwConfig.Prev.RevisionID && index == m.status.RolloutIDX {
+			if revision == m.gwConfig.Cur.RevisionID && index == *m.status.RolloutIDX {
 				continue
 			}
 		case Rollback:
-			if revision == m.gwConfig.Cur.RevisionID && index == m.status.RolloutIDX {
+			if m.gwConfig.Next == nil {
+				return endpoints, errors.New("config not set")
+			}
+			if m.status.RolloutIDX == nil {
+				//this shouldn't be nil, but just in case
+				return endpoints, errors.New("rollout idx is nil")
+			}
+			if revision == m.gwConfig.Next.RevisionID && index == *m.status.RolloutIDX {
 				continue
 			}
 		}

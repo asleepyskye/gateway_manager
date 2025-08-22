@@ -41,7 +41,10 @@ func (a *API) SetupRoutes(router *chi.Mux) {
 	router.Get("/config/next", a.GetNextConfig)
 	router.Get("/config/prev", a.GetPrevConfig)
 
+	router.Get("/proxy/endpoints", a.GetEndpoints)
+
 	router.Route("/actions", func(r chi.Router) {
+		r.Post("/ensureproxy", a.EnsureProxy)
 		r.Post("/config", a.SetConfig)
 		r.Post("/rollout", a.SetRollout)
 		r.Post("/deploy", a.SetDeploy)

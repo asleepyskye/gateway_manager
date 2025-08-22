@@ -32,7 +32,7 @@ func (p *Proxy) GetEndpoint(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "error while reading param", 500)
 		return
 	}
-	render.JSON(w, r, p.endpoints[index])
+	render.JSON(w, r, p.EndpointsConfig.Endpoints[index])
 }
 
 /*
@@ -52,7 +52,7 @@ func (p *Proxy) SetEndpoint(w http.ResponseWriter, r *http.Request) {
 		p.Logger.Warn("error while reading request body", slog.Any("error", err))
 		return
 	}
-	p.endpoints[index] = string(data)
+	p.EndpointsConfig.Endpoints[index] = string(data)
 }
 
 /*
@@ -68,7 +68,7 @@ func (p *Proxy) PatchEndpoints(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err = json.Unmarshal(data, &p.endpoints)
+	err = json.Unmarshal(data, &p.EndpointsConfig)
 	if err != nil {
 		http.Error(w, "error while parsing endpoints data", 500)
 		p.Logger.Warn("error while parsing endpoints data", slog.Any("error", err))
@@ -82,7 +82,7 @@ Handler for GET /endpoints
 gets all endpoints
 */
 func (p *Proxy) GetEndpoints(w http.ResponseWriter, r *http.Request) {
-	render.JSON(w, r, &p.endpoints)
+	render.JSON(w, r, &p.EndpointsConfig.Endpoints)
 }
 
 /*
@@ -104,9 +104,9 @@ func (p *Proxy) GetCache(w http.ResponseWriter, r *http.Request) {
 		path += "/" + reqPath
 	}
 
-	shardID := (guildID >> 22) % p.numShards
+	shardID := (guildID >> 22) % p.EndpointsConfig.NumShards
 	clusterID := shardID / p.Config.MaxConcurrency
-	target := p.endpoints[clusterID] + path
+	target := p.EndpointsConfig.Endpoints[clusterID] + path
 
 	req, err := http.NewRequest(http.MethodGet, target, nil)
 	if err != nil {

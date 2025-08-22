@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -48,45 +49,62 @@ func changeEventTarget(client http.Client, url string, eventTarget string) error
 }
 
 func (m *Machine) generatePod(index int) (*corev1.Pod, error) {
+	if m.gwConfig.Next == nil {
+		return nil, errors.New("config not set")
+	}
+
 	var pod corev1.Pod
-	err := json.Unmarshal(m.gwConfig.Cur.PodDefinition, &pod)
+	err := json.Unmarshal(m.gwConfig.Next.PodDefinition, &pod)
 	if err != nil {
-		m.logger.Error("error while parsing config!", slog.Any("error", err))
 		return nil, err
 	}
-	pod.Name = fmt.Sprintf("pluralkit-gateway-%s-%d", m.gwConfig.Cur.RevisionID, index)
+
+	pod.Name = fmt.Sprintf("pluralkit-gateway-%s-%d", m.gwConfig.Next.RevisionID, index)
+
+	if pod.Labels == nil {
+		pod.Labels = make(map[string]string)
+	}
+	if pod.Annotations == nil {
+		pod.Annotations = make(map[string]string)
+	}
 	pod.Labels["app"] = "pluralkit-gateway"
-	pod.Annotations["gateway-index"] = string(index)
-	pod.Annotations["revision-id"] = string(index)
+	pod.Annotations["gateway-index"] = strconv.Itoa(index)
+	pod.Annotations["revision-id"] = m.gwConfig.Next.RevisionID
 
 	pod.Spec.Hostname = pod.Name
 	pod.Spec.Subdomain = "gw-svc"
-	pod.Spec.Containers[0].Env = append(pod.Spec.Containers[0].Env,
-		corev1.EnvVar{
-			Name:  "pluralkit__discord__cluster__total_shards",
-			Value: strconv.Itoa(m.gwConfig.Next.NumShards),
-		},
-		corev1.EnvVar{
-			Name:  "pluralkit__discord__cluster__total_nodes",
-			Value: strconv.Itoa(m.gwConfig.Next.NumClusters),
-		},
-		corev1.EnvVar{
-			Name:  "pluralkit__discord__max_concurrency",
-			Value: strconv.Itoa(m.config.MaxConcurrency),
-		},
-		corev1.EnvVar{
-			Name:  "pluralkit__runtime_config_key",
-			Value: "gateway-k8s",
-		},
-		corev1.EnvVar{
-			Name:  "pluralkit__manager_url",
-			Value: "pluralkit-manager.pluralkit-gateway.svc.cluster.local:5020", //TODO: don't hardcode this
-		},
-	)
+	for i := 0; i < len(pod.Spec.Containers); i++ {
+		if pod.Spec.Containers[i].Env == nil {
+			pod.Spec.Containers[i].Env = make([]corev1.EnvVar, 0)
+		}
+		pod.Spec.Containers[i].Env = append(pod.Spec.Containers[i].Env,
+			corev1.EnvVar{
+				Name:  "pluralkit__discord__cluster__total_shards",
+				Value: strconv.Itoa(m.gwConfig.Next.NumShards),
+			},
+			corev1.EnvVar{
+				Name:  "pluralkit__discord__cluster__total_nodes",
+				Value: strconv.Itoa(m.gwConfig.Next.NumClusters),
+			},
+			corev1.EnvVar{
+				Name:  "pluralkit__discord__max_concurrency",
+				Value: strconv.Itoa(m.config.MaxConcurrency),
+			},
+			corev1.EnvVar{
+				Name:  "pluralkit__runtime_config_key",
+				Value: "gateway-k8s",
+			},
+			corev1.EnvVar{
+				Name:  "pluralkit__manager_url",
+				Value: "pluralkit-manager.pluralkit-gateway.svc.cluster.local:5020", //TODO: don't hardcode this
+			},
+		)
+	}
+
 	return &pod, nil
 }
 
-func ensureService(ctx context.Context, m *Machine) error {
+func (m *Machine) ensureService(ctx context.Context) error {
 	service := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "gw-svc",
@@ -112,7 +130,7 @@ func ensureService(ctx context.Context, m *Machine) error {
 	return nil
 }
 
-func ensureProxy(ctx context.Context, m *Machine) error {
+func (m *Machine) EnsureProxy(ctx context.Context) error {
 	service := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "pluralkit-gateway-proxy",
@@ -220,9 +238,8 @@ func updateCacheEndpoint(ctx context.Context, m *Machine, index int, endpoint st
 	var req *http.Request
 	for _, es := range k8endpoints.Items {
 		for _, e := range es.Endpoints {
-			m.logger.Info("TMP: updating cache endpoint", slog.Any("hostname", e.Addresses[0]))
-			target = fmt.Sprintf("http://%s:5000/endpoints/%d/set", e.Addresses[0], index)
-			req, _ = http.NewRequest("PATCH", target, strings.NewReader(endpoint))
+			target = fmt.Sprintf("http://%s:5000/endpoints/%d", e.Addresses[0], index)
+			req, _ = http.NewRequest("POST", target, strings.NewReader(endpoint))
 			req.Header.Set("Content-Type", "application/json")
 
 			var resp *http.Response
@@ -245,7 +262,7 @@ func updateCacheEndpoint(ctx context.Context, m *Machine, index int, endpoint st
 	return nil
 }
 
-func updateCacheEndpointBulk(ctx context.Context, m *Machine, endpoints map[int]string) error {
+func updateCacheEndpointBulk(ctx context.Context, m *Machine, endpoints EndpointsConfig) error {
 	k8endpoints, err := m.k8sClient.GetServiceEndpoints(ctx, "pluralkit-gateway-proxy-headless")
 	if err != nil {
 		return err
@@ -335,28 +352,35 @@ func RolloutState(m *Machine) Event {
 		m.logger.Warn("rollout state does not exist in etcd!")
 		status = "starting"
 	}
-	resume := (status != "starting")
+	resume := !(status == "starting" || status == "done" || status == "error")
 	if resume {
 		startIndexStr, err := m.etcdClient.Get(ctx, "rollout_index")
 		if err != nil {
-			m.logger.Warn("error while getting rollout index!")
+			m.logger.Warn("error while getting rollout index")
 		} else {
 			startIndex, err = strconv.Atoi(startIndexStr)
 			if err != nil {
-				m.logger.Warn("error while parsing rollout index!")
+				m.logger.Warn("error while parsing rollout index")
 			}
 		}
+	} else {
+		status = "starting"
 	}
 
 	numClusters := m.gwConfig.Cur.NumClusters
-	numPods, err := m.k8sClient.GetNumPods(ctx)
+	pods, err := m.k8sClient.GetPods(ctx, "app=pluralkit-gateway")
+	numPods := len(pods.Items)
 	if err != nil {
-		m.logger.Error("error while getting num pods!")
+		m.logger.Error("error while getting num pods")
 		return EventError
 	}
-	if numPods != numClusters || numPods != numClusters+1 {
-		m.logger.Error("unexpected number of pods!")
+	if numPods != numClusters && numPods != numClusters+1 {
+		m.logger.Error("unexpected number of pods", slog.Any("numPods", numPods))
 		return EventError
+	}
+
+	if !CheckPodNames(ctx, m) {
+		m.logger.Error("incorrect pod names, rollout cannot proceed")
 	}
 
 	if m.gwConfig.Next.RevisionID == "" {
@@ -366,32 +390,23 @@ func RolloutState(m *Machine) Event {
 		}
 	}
 
-	//update our config
-	m.confMu.Lock()
-	if m.gwConfig.Next != nil && !resume {
-		m.gwConfig.Prev = m.gwConfig.Cur
-		m.gwConfig.Cur = m.gwConfig.Next
-		m.gwConfig.Next = nil
-	}
-	m.confMu.Unlock()
-	m.saveConfigToEtcd()
-
 	//begin rollout!
-	m.status.RolloutTotal = numClusters
+	m.status.RolloutTotal = &numClusters
 	httpClient := http.Client{Timeout: 3 * time.Second}
 	var oldPod, newPod, target string
 	for i := startIndex; i < numClusters; i++ {
 		m.etcdClient.Put(ctx, "rollout_index", strconv.Itoa(i))
-		m.status.RolloutIDX = i
+		m.status.RolloutIDX = &i
 		m.logger.Info("rolling out", slog.Int("rollout_index", i), slog.Int("num_replicas", numClusters))
 
-		oldPod = fmt.Sprintf("pluralkit-gateway-%s-%d", m.gwConfig.Prev.RevisionID, i)
+		oldPod = fmt.Sprintf("pluralkit-gateway-%s-%d", m.gwConfig.Cur.RevisionID, i)
 		pod, err := m.generatePod(i)
 		if err != nil {
 			m.etcdClient.Put(ctx, "rollout_status", "error")
 			m.logger.Error("error while generating pod", slog.Any("error", err))
 			return EventError
 		}
+		newPod = pod.Name
 
 		m.etcdClient.Put(ctx, "rollout_status", "creating")
 		switch status {
@@ -478,7 +493,20 @@ func RolloutState(m *Machine) Event {
 	}
 
 	m.etcdClient.Put(ctx, "rollout_status", "done")
+
+	//update our config
+	m.confMu.Lock()
+	if m.gwConfig.Next != nil && !resume {
+		m.gwConfig.Prev = m.gwConfig.Cur
+		m.gwConfig.Cur = m.gwConfig.Next
+		m.gwConfig.Next = nil
+	}
+	m.confMu.Unlock()
 	m.saveConfigToEtcd()
+
+	m.status.RolloutIDX = nil
+	m.status.RolloutTotal = nil
+
 	return EventHealthy
 }
 
@@ -494,51 +522,38 @@ func DeployState(m *Machine) Event {
 
 	m.gwConfig.Next.RevisionID = GenerateRandomID()
 
-	//delete all pods created by the manager in the namespace, if they exist and wait
-	pods, err := m.k8sClient.GetAllPodsNames(ctx)
+	//delete all pluralkit-gateway pods created by the manager in the namespace, if they exist and wait
+	pods, err := m.k8sClient.GetPods(ctx, "app=pluralkit-gateway")
 	if err != nil {
 		return EventError
 	}
-	if len(pods) > 0 {
-		err = m.k8sClient.DeleteAllPods(ctx)
+	if len(pods.Items) > 0 {
+		err = m.k8sClient.DeleteAllPods(ctx, "app=pluralkit-gateway")
 		if err != nil {
-			m.logger.Error("error while deleting pods in deploy!", slog.Any("err", err))
-			return EventError
-		}
-		err = m.k8sClient.WaitForDeleted(ctx, pods, m.config.EventWaitTimeout)
-		if err != nil {
-			m.logger.Error("error while waiting for pods to be deleted in deploy!", slog.Any("err", err))
+			m.logger.Error("error while deleting pods", slog.Any("err", err))
 			return EventError
 		}
 	}
 
 	//make sure the service exists
-	err = ensureService(ctx, m)
+	err = m.ensureService(ctx)
 	if err != nil {
 		m.logger.Error("error while ensuring service exists!", slog.Any("err", err))
 		return EventError
 	}
 
 	//make sure the proxy exists
-	err = ensureProxy(ctx, m)
+	err = m.EnsureProxy(ctx)
 	if err != nil {
 		m.logger.Error("error while ensuring proxy exists!", slog.Any("err", err))
 		return EventError
 	}
 
-	//update our config
-	m.confMu.Lock()
-	m.gwConfig.Prev = m.gwConfig.Cur
-	m.gwConfig.Cur = m.gwConfig.Next
-	m.gwConfig.Next = nil
-	m.confMu.Unlock()
-	m.saveConfigToEtcd()
-
 	//begin deployment!
 	m.makeShardsSlice()
-	podNames := make([]string, m.gwConfig.Cur.NumClusters)
-	endpoints := make(map[int]string, m.gwConfig.Cur.NumClusters)
-	for i := range m.gwConfig.Cur.NumClusters {
+	podNames := make([]string, m.gwConfig.Next.NumClusters)
+	endpoints := make(map[int]string, m.gwConfig.Next.NumClusters)
+	for i := range m.gwConfig.Next.NumClusters {
 		pod, err := m.generatePod(i)
 		if err != nil {
 			m.etcdClient.Put(ctx, "rollout_status", "error")
@@ -564,7 +579,11 @@ func DeployState(m *Machine) Event {
 	}
 
 	m.logger.Info("updating cache endpoints")
-	err = updateCacheEndpointBulk(ctx, m, endpoints)
+	endpointsConfig := EndpointsConfig{
+		Endpoints: endpoints,
+		NumShards: m.gwConfig.Next.NumShards,
+	}
+	err = updateCacheEndpointBulk(ctx, m, endpointsConfig)
 	if err != nil {
 		m.logger.Error("error while updating cache endpoints in deploy!", slog.Any("err", err))
 		return EventError
@@ -579,6 +598,14 @@ func DeployState(m *Machine) Event {
 			return EventError
 		}
 	}
+
+	//update our config
+	m.confMu.Lock()
+	m.gwConfig.Prev = m.gwConfig.Cur
+	m.gwConfig.Cur = m.gwConfig.Next
+	m.gwConfig.Next = nil
+	m.confMu.Unlock()
+	m.saveConfigToEtcd()
 
 	return EventHealthy
 }

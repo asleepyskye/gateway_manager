@@ -68,9 +68,14 @@ type ShardState struct {
 
 type ManagerStatus struct {
 	Status       string       `json:"status"`
-	RolloutIDX   int          `json:"rollout_index,omitempty"`
-	RolloutTotal int          `json:"rollout_total,omitempty"`
+	RolloutIDX   *int         `json:"rollout_index,omitempty"`
+	RolloutTotal *int         `json:"rollout_total,omitempty"`
 	Shards       []ShardState `json:"shards"`
+}
+
+type EndpointsConfig struct {
+	NumShards int
+	Endpoints map[int]string
 }
 
 const alphanumeric = "abcdefghijklmnopqrstuvwxyz0123456789"

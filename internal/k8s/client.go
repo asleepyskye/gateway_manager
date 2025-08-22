@@ -35,7 +35,7 @@ func NewClient(namespace string, creatorName string) (*Client, error) {
 		return nil, err
 	}
 
-	selector := "managed-by=" + creatorName
+	selector := "created-by=" + creatorName
 
 	return &Client{
 		k8sClient:     clientset,
@@ -43,22 +43,6 @@ func NewClient(namespace string, creatorName string) (*Client, error) {
 		creatorName:   creatorName,
 		labelSelector: selector,
 	}, nil
-}
-
-// TODO: document this function.
-func (c *Client) GetAllPodsNames(ctx context.Context) ([]string, error) {
-	podList, err := c.k8sClient.CoreV1().Pods(c.namespace).List(ctx, metav1.ListOptions{
-		LabelSelector: c.labelSelector,
-	})
-	if err != nil {
-		return make([]string, 0), err
-	}
-
-	podNames := make([]string, len(podList.Items))
-	for i, pod := range podList.Items {
-		podNames[i] = pod.Name
-	}
-	return podNames, nil
 }
 
 func (c *Client) getSelector(labels string) (k8sLabels.Selector, error) {
@@ -84,7 +68,6 @@ func (c *Client) GetPods(ctx context.Context, labels string) (*corev1.PodList, e
 	if err != nil {
 		return nil, err
 	}
-
 	podList, err := c.k8sClient.CoreV1().Pods(c.namespace).List(ctx, metav1.ListOptions{
 		LabelSelector: selector.String(),
 	})
@@ -92,17 +75,6 @@ func (c *Client) GetPods(ctx context.Context, labels string) (*corev1.PodList, e
 		return nil, err
 	}
 	return podList, nil
-}
-
-// TODO: document this function.
-func (c *Client) GetNumPods(ctx context.Context) (int, error) {
-	podList, err := c.k8sClient.CoreV1().Pods(c.namespace).List(ctx, metav1.ListOptions{
-		LabelSelector: c.labelSelector,
-	})
-	if err != nil {
-		return 0, err
-	}
-	return len(podList.Items), nil
 }
 
 func (c *Client) PodExists(ctx context.Context, name string) (bool, error) {
@@ -187,16 +159,20 @@ func (c *Client) DeletePod(ctx context.Context, name string) error {
 }
 
 // TODO: document this function.
-func (c *Client) DeleteAllPods(ctx context.Context) error {
+func (c *Client) DeleteAllPods(ctx context.Context, labels string) error {
+	selector, err := c.getSelector(labels)
+	if err != nil {
+		return err
+	}
 	deletePolicy := metav1.DeletePropagationForeground
 	deleteOptions := metav1.DeleteOptions{
 		PropagationPolicy: &deletePolicy,
 	}
 	listOptions := metav1.ListOptions{
-		LabelSelector: c.labelSelector,
+		LabelSelector: selector.String(),
 	}
 
-	err := c.k8sClient.CoreV1().Pods(c.namespace).DeleteCollection(ctx, deleteOptions, listOptions)
+	err = c.k8sClient.CoreV1().Pods(c.namespace).DeleteCollection(ctx, deleteOptions, listOptions)
 	if err != nil {
 		return err
 	}

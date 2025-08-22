@@ -5,7 +5,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-
 	"pluralkit/manager/internal/core"
 
 	"github.com/go-chi/render"
@@ -18,6 +17,16 @@ returns "pong!"
 */
 func (a *API) Ping(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte("pong!"))
+}
+
+/*
+Handler for /ping
+
+returns "pong!"
+*/
+func (a *API) EnsureProxy(w http.ResponseWriter, r *http.Request) {
+	a.Controller.EnsureProxy(r.Context())
+	w.Write([]byte(""))
 }
 
 /*
@@ -42,7 +51,11 @@ func (a *API) GetEndpoints(w http.ResponseWriter, r *http.Request) {
 		a.Logger.Warn("error while getting endpoints", slog.Any("error", err))
 		return
 	}
-	render.JSON(w, r, endpoints)
+	endpointsConf := core.EndpointsConfig{
+		Endpoints: endpoints,
+		NumShards: a.Controller.GetNumShards(),
+	}
+	render.JSON(w, r, endpointsConf)
 }
 
 /*

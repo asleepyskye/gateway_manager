@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"strings"
 	"time"
 )
 
@@ -22,28 +21,27 @@ const (
 
 // check that we have the correct number of pods
 func CheckNumPods(ctx context.Context, m *Machine) bool {
-	numPods, err := m.k8sClient.GetNumPods(ctx)
+	pods, err := m.k8sClient.GetPods(ctx, "app=pluralkit-gateway")
 	if err != nil {
 		return false
 	}
-	if numPods != (m.GetNumShards() / m.config.MaxConcurrency) {
+	if len(pods.Items) != (m.GetNumShards() / m.config.MaxConcurrency) {
 		return false
 	}
 	return true
 }
 
 // check that we can contact each pod
+// TODO: prob change this to use the grabbed endpoints
 func CheckHealthNetwork(ctx context.Context, m *Machine) bool {
 	client := http.Client{}
 	id := m.GetCurrentConfig().RevisionID
 	for i := 0; i < m.GetCurrentConfig().NumClusters; i++ {
 		target := fmt.Sprintf("http://pluralkit-gateway-%s-%d.gw-svc.pluralkit-gateway:5000/up", id, i)
-		m.logger.Info("chk health", slog.Any("target", target))
 		req, _ := http.NewRequest("GET", target, nil)
 		resp, err := client.Do(req)
-		if err != nil {
-			return false
-		} else if resp.StatusCode != 200 {
+		if err != nil || resp.StatusCode != 200 {
+			m.logger.Error("error while requesting status", slog.Any("error", err))
 			return false
 		}
 		resp.Body.Close()
@@ -59,7 +57,7 @@ func CheckHeartbeat(ctx context.Context, m *Machine) bool {
 		for s := range m.config.MaxConcurrency {
 			shard := m.status.Shards[(c*m.config.MaxConcurrency)+s]
 			ht := time.Unix(int64(shard.LastHeartbeat), 0)
-			if time.Now().Before(ht.Add(time.Duration(5) * time.Minute)) {
+			if time.Now().Before(ht.Add(time.Duration(10)*time.Minute)) || shard.LastHeartbeat == 0 {
 				numHeartbeated++
 			}
 		}
@@ -72,12 +70,16 @@ func CheckHeartbeat(ctx context.Context, m *Machine) bool {
 
 // check that each pod has the expected UID (check that all pods match iter)
 func CheckPodNames(ctx context.Context, m *Machine) bool {
-	pods, err := m.k8sClient.GetAllPodsNames(ctx)
+	pods, err := m.k8sClient.GetPods(ctx, "app=pluralkit-gateway")
 	if err != nil {
 		return false
 	}
-	for _, val := range pods {
-		if !strings.Contains(val, m.gwConfig.Cur.RevisionID) {
+	for _, pod := range pods.Items {
+		if pod.Annotations == nil {
+			return false
+		}
+		rev, ok := pod.Annotations["revision-id"]
+		if !ok || rev != m.gwConfig.Cur.RevisionID {
 			return false
 		}
 	}
@@ -94,6 +96,7 @@ func CheckProxy(ctx context.Context, m *Machine) bool {
 	} else if resp.StatusCode != 200 {
 		return false
 	}
+	resp.Body.Close()
 	return true
 }
 
