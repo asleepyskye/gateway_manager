@@ -5,6 +5,17 @@ metadata:
   labels:
     app: pluralkit-gateway
 spec:
+  dnsPolicy: "None"
+  dnsConfig:
+    nameservers:
+      - 10.43.0.10
+    searches:
+      - kube-system.svc.cluster.local
+      - svc.cluster.local
+      - cluster.local
+    options:
+      - name: ndots
+        value: "5"
   containers:
     - name: gateway
       image: registry.den.vixen.lgbt/pluralkit/gateway:latest

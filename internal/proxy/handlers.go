@@ -22,7 +22,7 @@ func (p *Proxy) Ping(w http.ResponseWriter, r *http.Request) {
 }
 
 /*
-Handler for GET /endpoints/{idx}/get
+Handler for GET /endpoints/{idx}
 
 gets the endpoint for the specified index/instance
 */
@@ -32,14 +32,11 @@ func (p *Proxy) GetEndpoint(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "error while reading param", 500)
 		return
 	}
-	if err := render.Render(w, r, &p.endpoints[index]); err != nil {
-		http.Error(w, "error while rendering response", 500)
-		return
-	}
+	render.JSON(w, r, p.endpoints[index])
 }
 
 /*
-Handler for POST /endpoints/{idx}/set
+Handler for POST /endpoints/{idx}
 
 sets the endpoint for the specified index/instance
 */
@@ -55,7 +52,7 @@ func (p *Proxy) SetEndpoint(w http.ResponseWriter, r *http.Request) {
 		p.Logger.Warn("error while reading request body", slog.Any("error", err))
 		return
 	}
-	p.endpoints[index].Endpoint = string(data)
+	p.endpoints[index] = string(data)
 }
 
 /*
@@ -80,6 +77,15 @@ func (p *Proxy) PatchEndpoints(w http.ResponseWriter, r *http.Request) {
 }
 
 /*
+Handler for GET /endpoints
+
+gets all endpoints
+*/
+func (p *Proxy) GetEndpoints(w http.ResponseWriter, r *http.Request) {
+	render.JSON(w, r, &p.endpoints)
+}
+
+/*
 Handler for /cache/guilds/:id/*path
 
 Acts as a proxy to the appropriate gateway instance based on the guild ID.
@@ -100,7 +106,7 @@ func (p *Proxy) GetCache(w http.ResponseWriter, r *http.Request) {
 
 	shardID := (guildID >> 22) % p.numShards
 	clusterID := shardID / p.Config.MaxConcurrency
-	target := p.endpoints[clusterID].Endpoint + path
+	target := p.endpoints[clusterID] + path
 
 	req, err := http.NewRequest(http.MethodGet, target, nil)
 	if err != nil {

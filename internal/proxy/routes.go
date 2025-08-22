@@ -13,7 +13,7 @@ type Proxy struct {
 	httpClient http.Client
 	Config     core.ProxyConfig
 	Logger     *slog.Logger
-	endpoints  []core.ProxyEndpoint
+	endpoints  map[int]string
 	numShards  int
 }
 
@@ -24,7 +24,7 @@ func NewProxy(config core.ProxyConfig, logger *slog.Logger) *Proxy {
 		httpClient: http.Client{},
 		Config:     config,
 		Logger:     moduleLogger,
-		endpoints:  make([]core.ProxyEndpoint, 255), //todo: don't harcode this lol
+		endpoints:  make(map[int]string),
 	}
 }
 
@@ -35,9 +35,10 @@ func (a *Proxy) SetupRoutes(router *chi.Mux) {
 	router.Get("/cache/guilds/{id}/*", a.GetCache)
 
 	router.Route("/endpoints", func(r chi.Router) {
-		router.Get("/{idx}/get", a.GetEndpoint)
-		router.Post("/{idx}/set", a.SetEndpoint)
-		router.Patch("/", a.PatchEndpoints)
+		r.Get("/{idx}", a.GetEndpoint)
+		r.Post("/{idx}", a.SetEndpoint)
+		r.Get("/", a.GetEndpoints)
+		r.Patch("/", a.PatchEndpoints)
 	})
 
 }

@@ -4,7 +4,6 @@ import (
 	"errors"
 	"log/slog"
 	"math/rand"
-	"net/http"
 	"time"
 )
 
@@ -59,27 +58,16 @@ type ProxyConfig struct {
 type ShardState struct {
 	ShardID            int32 `json:"shard_id"`
 	Up                 bool  `json:"up"`
-	DisconnectionCount int32 `json:"disconnection_count,omitempty"`
-	Latency            int32 `json:"latency,omitempty"`
-	LastHeartbeat      int32 `json:"last_heartbeat,omitempty"`
-	LastConnection     int32 `json:"last_connection,omitempty"`
+	DisconnectionCount int32 `json:"disconnection_count"`
+	Latency            int32 `json:"latency"`
+	LastHeartbeat      int32 `json:"last_heartbeat"`
+	LastConnection     int32 `json:"last_connection"`
 	ClusterID          int32 `json:"cluster_id"`
 }
 
 type ShardStateList struct {
 	Shards []ShardState `json:"shards"`
 }
-
-// render helper function for ShardStateList
-func (i *ShardStateList) Render(w http.ResponseWriter, r *http.Request) error { return nil }
-
-type ProxyEndpoint struct {
-	Index    int
-	Endpoint string
-}
-
-// render helper function for ProxyEndpoint
-func (i *ProxyEndpoint) Render(w http.ResponseWriter, r *http.Request) error { return nil }
 
 const alphanumeric = "abcdefghijklmnopqrstuvwxyz0123456789"
 

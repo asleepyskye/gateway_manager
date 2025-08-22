@@ -27,10 +27,7 @@ returns the status of all shards
 */
 func (a *API) GetStatus(w http.ResponseWriter, r *http.Request) {
 	shards := a.Controller.GetShardStatus()
-	if err := render.Render(w, r, &core.ShardStateList{Shards: shards}); err != nil {
-		http.Error(w, "error while rendering response", 500)
-		return
-	}
+	render.JSON(w, r, shards)
 }
 
 /*
@@ -63,8 +60,12 @@ returns the current running configuration for manager
 */
 func (a *API) GetConfig(w http.ResponseWriter, r *http.Request) {
 	val := a.Controller.GetCurrentConfig()
+	if val == nil {
+		w.Write([]byte("config not set"))
+		return
+	}
 
-	if err := render.Render(w, r, &val); err != nil {
+	if err := render.Render(w, r, val); err != nil {
 		http.Error(w, "error while rendering response", 500)
 		return
 	}
@@ -77,8 +78,30 @@ returns the next configuration for manager
 */
 func (a *API) GetNextConfig(w http.ResponseWriter, r *http.Request) {
 	val := a.Controller.GetNextConfig()
+	if val == nil {
+		w.Write([]byte("config not set"))
+		return
+	}
 
-	if err := render.Render(w, r, &val); err != nil {
+	if err := render.Render(w, r, val); err != nil {
+		http.Error(w, "error while rendering response", 500)
+		return
+	}
+}
+
+/*
+Handler for /config/prev
+
+returns the next configuration for manager
+*/
+func (a *API) GetPrevConfig(w http.ResponseWriter, r *http.Request) {
+	val := a.Controller.GetPrevConfig()
+	if val == nil {
+		w.Write([]byte("config not set"))
+		return
+	}
+
+	if err := render.Render(w, r, val); err != nil {
 		http.Error(w, "error while rendering response", 500)
 		return
 	}
@@ -124,5 +147,25 @@ Sends a deploy event command to start a deploy on manager
 */
 func (a *API) SetDeploy(w http.ResponseWriter, r *http.Request) {
 	a.Controller.SendEvent(core.EventDeployCmd)
+	w.Write([]byte(""))
+}
+
+/*
+Handler for /actions/pause
+
+Sends a deploy event command to start a deploy on manager
+*/
+func (a *API) SetPause(w http.ResponseWriter, r *http.Request) {
+	a.Controller.SendEvent(core.EventPause)
+	w.Write([]byte(""))
+}
+
+/*
+Handler for /actions/resume
+
+Sends a deploy event command to start a deploy on manager
+*/
+func (a *API) SetResume(w http.ResponseWriter, r *http.Request) {
+	a.Controller.SendEvent(core.EventResume)
 	w.Write([]byte(""))
 }

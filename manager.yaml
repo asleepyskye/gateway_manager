@@ -18,12 +18,18 @@ rules:
 - apiGroups: [""]
   resources: ["pods"]
   verbs: ["get", "list", "watch", "create", "delete", "deletecollection", "patch", "update"]
+- apiGroups: ["apps"]
+  resources: ["deployments"]
+  verbs: ["get", "list", "watch", "create", "delete", "deletecollection", "patch", "update"]
 - apiGroups: [""]
   resources: ["services"]
   verbs: ["get", "list", "watch", "create", "delete", "patch", "update"]
 - apiGroups: [""]
   resources: ["pods/log"]
   verbs: ["get", "list", "watch"]
+- apiGroups: ["discovery.k8s.io"]
+  resources: ["endpointslices"]
+  verbs: ["list", "watch"] 
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -62,7 +68,7 @@ spec:
       periodSeconds: 5
     env:
     - name: pluralkit__manager__etcd_addr
-      value: 'pk-db.den.vixen.lgbt:2379'
+      value: '10.10.5.114:2379'
     - name: pluralkit__manager__addr
       value: '0.0.0.0:5020'
     - name: pluralkit__discord__max_concurrency
@@ -72,6 +78,8 @@ spec:
         secretKeyRef:
           name: sentry-url
           key: credential
+    - name: pluralkit__manager__proxy_image
+      value: 'registry.den.vixen.lgbt/pluralkit/gateway_proxy'
     ports:
     - containerPort: 5020
 ---

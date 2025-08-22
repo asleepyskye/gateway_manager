@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -37,6 +38,7 @@ func CheckHealthNetwork(ctx context.Context, m *Machine) bool {
 	id := m.GetCurrentConfig().RevisionID
 	for i := 0; i < m.GetCurrentConfig().NumClusters; i++ {
 		target := fmt.Sprintf("http://pluralkit-gateway-%s-%d:5000/up", id, i)
+		m.logger.Info("chk health", slog.Any("target", target))
 		req, _ := http.NewRequest("GET", target, nil)
 		resp, err := client.Do(req)
 		if err != nil {
@@ -71,9 +73,6 @@ func CheckHeartbeat(ctx context.Context, m *Machine) bool {
 // check that each pod has the expected UID (check that all pods match iter)
 func CheckPodNames(ctx context.Context, m *Machine) bool {
 	pods, err := m.k8sClient.GetAllPodsNames(ctx)
-	if err != nil {
-		return false
-	}
 	if err != nil {
 		return false
 	}

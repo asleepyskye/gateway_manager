@@ -51,11 +51,11 @@ func addEnvs(m *Machine, pod *corev1.Pod) {
 	pod.Spec.Containers[0].Env = append(pod.Spec.Containers[0].Env,
 		corev1.EnvVar{
 			Name:  "pluralkit__discord__cluster__total_shards",
-			Value: strconv.Itoa(m.gwConfig.Cur.NumShards),
+			Value: strconv.Itoa(m.gwConfig.Next.NumShards),
 		},
 		corev1.EnvVar{
 			Name:  "pluralkit__discord__cluster__total_nodes",
-			Value: strconv.Itoa(m.gwConfig.Cur.NumClusters),
+			Value: strconv.Itoa(m.gwConfig.Next.NumClusters),
 		},
 		corev1.EnvVar{
 			Name:  "pluralkit__discord__max_concurrency",
@@ -67,7 +67,7 @@ func addEnvs(m *Machine, pod *corev1.Pod) {
 		},
 		corev1.EnvVar{
 			Name:  "pluralkit__manager_url",
-			Value: "pluralkit-manager:5020", //TODO: don't hardcode this
+			Value: "pluralkit-manager.pluralkit-gateway.svc.cluster.local:5020", //TODO: don't hardcode this
 		},
 	)
 }
@@ -174,6 +174,12 @@ func ensureProxy(ctx context.Context, m *Machine) error {
 							Name:  "gateway-proxy",
 							Image: m.config.ProxyImage,
 							Env:   proxy_envs,
+							Ports: []corev1.ContainerPort{
+								{
+									ContainerPort: 5000,
+									Protocol:      corev1.ProtocolTCP,
+								},
+							},
 						},
 					},
 				},
@@ -200,10 +206,10 @@ func updateCacheEndpoint(ctx context.Context, m *Machine, index int, endpoint st
 	var req *http.Request
 	for _, es := range k8endpoints.Items {
 		for _, e := range es.Endpoints {
-			m.logger.Info("TMP: updating cache endpoint", slog.Any("hostname", *e.Hostname))
-			target = fmt.Sprintf("http://%s:5000/endpoints/%d/set", *e.Hostname, index)
-			req, _ = http.NewRequest("POST", target, strings.NewReader(endpoint))
-			req.Header.Set("Content-Type", "text/plain")
+			m.logger.Info("TMP: updating cache endpoint", slog.Any("hostname", e.Addresses[0]))
+			target = fmt.Sprintf("http://%s:5000/endpoints/%d/set", e.Addresses[0], index)
+			req, _ = http.NewRequest("PATCH", target, strings.NewReader(endpoint))
+			req.Header.Set("Content-Type", "application/json")
 
 			var resp *http.Response
 			retries := 3
@@ -225,7 +231,7 @@ func updateCacheEndpoint(ctx context.Context, m *Machine, index int, endpoint st
 	return nil
 }
 
-func updateCacheEndpointBulk(ctx context.Context, m *Machine, endpoints []ProxyEndpoint) error {
+func updateCacheEndpointBulk(ctx context.Context, m *Machine, endpoints map[int]string) error {
 	k8endpoints, err := m.k8sClient.GetServiceEndpoints(ctx, "pluralkit-gateway-proxy-headless")
 	if err != nil {
 		return err
@@ -241,10 +247,9 @@ func updateCacheEndpointBulk(ctx context.Context, m *Machine, endpoints []ProxyE
 	var req *http.Request
 	for _, es := range k8endpoints.Items {
 		for _, e := range es.Endpoints {
-			m.logger.Info("TMP: updating cache endpoint", slog.Any("hostname", *e.Hostname))
-			target = fmt.Sprintf("http://%s:5000/endpoints", *e.Hostname)
-			req, _ = http.NewRequest("POST", target, bytes.NewReader(data))
-			req.Header.Set("Content-Type", "text/plain")
+			target = fmt.Sprintf("http://%s:5000/endpoints", e.Addresses[0])
+			req, _ = http.NewRequest("PATCH", target, bytes.NewReader(data))
+			req.Header.Set("Content-Type", "application/json")
 
 			var resp *http.Response
 			retries := 3
@@ -283,7 +288,7 @@ func MonitorState(m *Machine) Event {
 			m.logger.Debug("checking cluster health")
 
 			//first check that we have a config
-			if m.gwConfig.Cur.NumShards != 0 && m.gwConfig.Cur.PodDefinition != nil {
+			if m.gwConfig.Cur != nil && m.gwConfig.Cur.NumShards != 0 && m.gwConfig.Cur.PodDefinition != nil {
 				ev, failures := RunChecks(m)
 				if !ev {
 					m.logger.Error("failed one or more health checks!", slog.Any("failures", failures))
@@ -299,6 +304,11 @@ func RolloutState(m *Machine) Event {
 	// TODO: check for sigterm
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	if m.gwConfig.Next == nil || m.gwConfig.Cur == nil {
+		m.logger.Error("config is not set!")
+		return EventError
+	}
 
 	var pod corev1.Pod
 	err := json.Unmarshal(m.gwConfig.Next.PodDefinition, &pod)
@@ -358,6 +368,7 @@ func RolloutState(m *Machine) Event {
 		m.gwConfig.Next = nil
 	}
 	m.confMu.Unlock()
+	m.saveConfigToEtcd()
 
 	//begin rollout!
 	httpClient := http.Client{Timeout: 3 * time.Second}
@@ -375,7 +386,7 @@ func RolloutState(m *Machine) Event {
 		m.etcdClient.Put(ctx, "rollout_status", "creating")
 		switch status {
 		case "starting", "creating":
-			m.logger.Debug("creating pod", slog.String("pod", newPod))
+			m.logger.Info("creating pod", slog.String("pod", newPod))
 			_, err = m.k8sClient.CreatePod(ctx, &pod)
 			if err != nil {
 				m.etcdClient.Put(ctx, "rollout_status", "error")
@@ -387,7 +398,7 @@ func RolloutState(m *Machine) Event {
 			fallthrough
 
 		case "waiting":
-			m.logger.Debug("waiting for ready", slog.String("old_pod", oldPod), slog.String("new_pod", newPod))
+			m.logger.Info("waiting for ready", slog.String("old_pod", oldPod), slog.String("new_pod", newPod))
 			err = m.k8sClient.WaitForReady(ctx, []string{newPod}, m.config.EventWaitTimeout)
 			if err != nil {
 				m.etcdClient.Put(ctx, "rollout_status", "error")
@@ -400,7 +411,7 @@ func RolloutState(m *Machine) Event {
 			fallthrough
 
 		case "switching_old":
-			m.logger.Debug("switching event target on old pod")
+			m.logger.Info("switching event target on old pod")
 			target = fmt.Sprintf("http://%s.%s:5000", oldPod, pod.Spec.Subdomain)
 			err = changeEventTarget(httpClient, target, "")
 			if err != nil {
@@ -414,7 +425,7 @@ func RolloutState(m *Machine) Event {
 			fallthrough
 
 		case "switching_new":
-			m.logger.Debug("switching event target on new pod")
+			m.logger.Info("switching event target on new pod")
 			target = fmt.Sprintf("http://%s.%s:5000", newPod, pod.Spec.Subdomain)
 			updateCacheEndpoint(ctx, m, i, target)
 
@@ -430,7 +441,7 @@ func RolloutState(m *Machine) Event {
 			fallthrough
 
 		case "deleting":
-			m.logger.Debug("deleting pod", slog.String("pod", oldPod))
+			m.logger.Info("deleting pod", slog.String("pod", oldPod))
 			err = m.k8sClient.DeletePod(ctx, oldPod)
 			if err != nil {
 				if resume {
@@ -457,6 +468,7 @@ func RolloutState(m *Machine) Event {
 	}
 
 	m.etcdClient.Put(ctx, "rollout_status", "done")
+	m.saveConfigToEtcd()
 	return EventHealthy
 }
 
@@ -464,6 +476,11 @@ func RolloutState(m *Machine) Event {
 func DeployState(m *Machine) Event {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	if m.gwConfig.Next == nil {
+		m.logger.Error("config is not set!")
+		return EventError
+	}
 
 	var pod corev1.Pod
 	err := json.Unmarshal(m.gwConfig.Next.PodDefinition, &pod)
@@ -496,12 +513,14 @@ func DeployState(m *Machine) Event {
 	err = ensureService(ctx, m)
 	if err != nil {
 		m.logger.Error("error while ensuring service exists!", slog.Any("err", err))
+		return EventError
 	}
 
 	//make sure the proxy exists
 	err = ensureProxy(ctx, m)
 	if err != nil {
-		m.logger.Error("error while ensuring service exists!", slog.Any("err", err))
+		m.logger.Error("error while ensuring proxy exists!", slog.Any("err", err))
+		return EventError
 	}
 
 	//update our config
@@ -510,13 +529,14 @@ func DeployState(m *Machine) Event {
 	m.gwConfig.Cur = m.gwConfig.Next
 	m.gwConfig.Next = nil
 	m.confMu.Unlock()
+	m.saveConfigToEtcd()
 
 	//begin deployment!
 	m.statMu.Lock()
 	m.shardStatus = make([]ShardState, m.gwConfig.Cur.NumShards)
 	m.statMu.Unlock()
 	podNames := make([]string, m.gwConfig.Cur.NumClusters)
-	endpoints := make([]ProxyEndpoint, m.gwConfig.Cur.NumClusters)
+	endpoints := make(map[int]string, m.gwConfig.Cur.NumClusters)
 	for i := range m.gwConfig.Cur.NumClusters {
 		pod.Name = fmt.Sprintf("pluralkit-gateway-%s-%d", m.gwConfig.Cur.RevisionID, i)
 		pod.Spec.Hostname = pod.Name
@@ -528,7 +548,7 @@ func DeployState(m *Machine) Event {
 			return EventError
 		}
 		podNames[i] = pod.Name
-		endpoints[i] = ProxyEndpoint{i, fmt.Sprintf("http://%s.%s:5000", pod.Spec.Hostname, pod.Spec.Subdomain)}
+		endpoints[i] = fmt.Sprintf("http://%s.%s:5000", pod.Spec.Hostname, pod.Spec.Subdomain)
 		time.Sleep(50 * time.Millisecond) //sleep a short amount of time
 	}
 
@@ -549,7 +569,7 @@ func DeployState(m *Machine) Event {
 	m.logger.Info("setting event targets")
 	httpClient := http.Client{Timeout: 3 * time.Second}
 	for _, val := range endpoints {
-		err = changeEventTarget(httpClient, val.Endpoint, m.config.EventTarget)
+		err = changeEventTarget(httpClient, val, m.config.EventTarget)
 		if err != nil {
 			m.logger.Error("error while setting runtime_config!", slog.Any("err", err))
 			return EventError
@@ -561,7 +581,6 @@ func DeployState(m *Machine) Event {
 
 // TODO: document this function.
 func DegradedState(m *Machine) Event {
-	//just for now...
 	ticker := time.NewTicker(m.config.MonitorPeriod)
 	defer ticker.Stop()
 
@@ -577,7 +596,7 @@ func DegradedState(m *Machine) Event {
 			m.logger.Debug("checking cluster health")
 
 			//first check that we have a config
-			if m.gwConfig.Cur.NumShards != 0 && m.gwConfig.Cur.PodDefinition != nil {
+			if m.gwConfig.Cur != nil && m.gwConfig.Cur.NumShards != 0 && m.gwConfig.Cur.PodDefinition != nil {
 				ev, failures := RunChecks(m)
 				if !ev {
 					m.logger.Warn("failed one or more health checks!", slog.Any("failures", failures))
@@ -592,11 +611,23 @@ func DegradedState(m *Machine) Event {
 
 // TODO: document this function.
 func RollbackState(m *Machine) Event {
-	return ""
+	return EventOk
+}
+
+func PausedState(m *Machine) Event {
+	for {
+		select {
+		case sig := <-m.sigChannel:
+			m.logger.Warn("os signal recieved while paused!", slog.String("signal", sig.String()))
+			return EventSigterm
+		case cmd := <-m.eventChannel:
+			return cmd
+		}
+	}
 }
 
 // TODO: document this function.
 func ShutdownState(m *Machine) Event {
-	//TODO: cleanup anything we need to before shutdown
+	m.saveConfigToEtcd()
 	return ""
 }

@@ -30,19 +30,21 @@ const (
 	Rollback State = "rollback"
 	Deploy   State = "deploy"
 	Degraded State = "degraded"
+	Paused   State = "paused"
 	Shutdown State = "shutdown"
 )
 
 const (
-	EventOk            Event = "ok"
-	EventHealthy       Event = "healthy"
-	EventNotHealthy    Event = "not_healthy"
-	EventRolloutCmd    Event = "rollout_command"
-	EventDeployCmd     Event = "deploy_command"
-	EventError         Event = "error"
-	EventRecoverable   Event = "recoverable"
-	EventUnrecoverable Event = "unrecoverable"
-	EventSigterm       Event = "sigterm"
+	EventOk         Event = "ok"
+	EventHealthy    Event = "healthy"
+	EventNotHealthy Event = "not_healthy"
+	EventRolloutCmd Event = "rollout_command"
+	EventDeployCmd  Event = "deploy_command"
+	EventError      Event = "error"
+	EventRollback   Event = "rollback"
+	EventPause      Event = "pause"
+	EventResume     Event = "resume"
+	EventSigterm    Event = "sigterm"
 )
 
 // helper struct for a gateway config
@@ -51,6 +53,11 @@ type GatewayConfig struct {
 	NumClusters   int
 	PodDefinition json.RawMessage
 	RevisionID    string
+}
+
+type GatewayConfigPatch struct {
+	NumShards     int
+	PodDefinition json.RawMessage
 }
 
 type VersionedGatewayConfig struct {
@@ -101,6 +108,7 @@ func NewController(etcdCli *etcd.Client, k8sCli *k8s.Client, eventChan chan Even
 		Rollout:  RolloutState,
 		Deploy:   DeployState,
 		Degraded: DegradedState,
+		Paused:   PausedState,
 		Rollback: RollbackState,
 		Shutdown: ShutdownState,
 	}
@@ -111,17 +119,21 @@ func NewController(etcdCli *etcd.Client, k8sCli *k8s.Client, eventChan chan Even
 			EventNotHealthy: Degraded,
 			EventRolloutCmd: Rollout,
 			EventDeployCmd:  Deploy,
+			EventRollback:   Rollback,
 			EventSigterm:    Shutdown,
 		},
 		Rollout: {
-			EventHealthy: Monitor,
-			EventError:   Rollback,
-			EventSigterm: Shutdown,
+			EventHealthy:  Monitor,
+			EventError:    Degraded,
+			EventRollback: Rollback,
+			EventSigterm:  Shutdown,
+			EventPause:    Degraded,
 		},
 		Deploy: {
-			EventHealthy: Monitor,
-			EventError:   Degraded,
-			EventSigterm: Shutdown,
+			EventHealthy:  Monitor,
+			EventError:    Degraded,
+			EventRollback: Rollback,
+			EventSigterm:  Shutdown,
 		},
 		Degraded: {
 			EventHealthy:    Monitor,
@@ -134,6 +146,13 @@ func NewController(etcdCli *etcd.Client, k8sCli *k8s.Client, eventChan chan Even
 			EventOk:      Monitor,
 			EventError:   Degraded,
 			EventSigterm: Shutdown,
+		},
+		Paused: {
+			EventResume:     Rollout,
+			EventRolloutCmd: Rollout,
+			EventRollback:   Rollback,
+			EventDeployCmd:  Deploy,
+			EventSigterm:    Shutdown,
 		},
 	}
 
@@ -163,6 +182,12 @@ func NewController(etcdCli *etcd.Client, k8sCli *k8s.Client, eventChan chan Even
 		}
 	}
 
+	if m.gwConfig.Cur != nil {
+		m.statMu.Lock()
+		m.shardStatus = make([]ShardState, m.gwConfig.Cur.NumShards)
+		m.statMu.Unlock()
+	}
+
 	signal.Notify(m.sigChannel, syscall.SIGTERM, syscall.SIGINT)
 
 	return m
@@ -173,27 +198,40 @@ func (m *Machine) SendEvent(event Event) {
 	m.eventChannel <- event
 }
 
+func (m *Machine) saveConfigToEtcd() error {
+	conf, err := json.Marshal(m.gwConfig)
+	if err != nil {
+		m.logger.Warn("error while marshalling config", slog.Any("error", err))
+		return err
+	}
+
+	err = m.etcdClient.Put(context.Background(), "gateway_config", string(conf))
+	if err != nil {
+		m.logger.Warn("error while putting config", slog.Any("error", err))
+		return err
+	}
+	return nil
+}
+
 // sets the next gateway config for use on next deploy/rollout
 func (m *Machine) SetConfig(configStr []byte) error {
-	var config *GatewayConfig
+	config := GatewayConfigPatch{}
 
 	if m.currentState != Monitor && m.currentState != Degraded {
 		return errors.New("cannot set config in current state")
 	}
 
-	err := json.Unmarshal(configStr, config)
+	err := json.Unmarshal(configStr, &config)
 	if err != nil {
 		m.logger.Warn("error while unmarshaling config", slog.Any("error", err))
 		return err
-	} else if config == nil {
-		m.logger.Warn("config is nil!")
-		return nil
 	}
 
-	config.NumClusters = (config.NumShards + m.config.MaxConcurrency - 1) / m.config.MaxConcurrency
-
 	m.confMu.Lock()
-	m.gwConfig.Next = config
+	m.gwConfig.Next = &GatewayConfig{}
+	m.gwConfig.Next.NumShards = config.NumShards
+	m.gwConfig.Next.PodDefinition = config.PodDefinition
+	m.gwConfig.Next.NumClusters = (config.NumShards + m.config.MaxConcurrency - 1) / m.config.MaxConcurrency
 	m.confMu.Unlock()
 
 	conf, err := json.Marshal(m.gwConfig)
@@ -212,17 +250,24 @@ func (m *Machine) SetConfig(configStr []byte) error {
 }
 
 // returns the current gw config
-func (m *Machine) GetCurrentConfig() GatewayConfig {
+func (m *Machine) GetCurrentConfig() *GatewayConfig {
 	m.confMu.RLock()
 	defer m.confMu.RUnlock()
-	return *m.gwConfig.Cur
+	return m.gwConfig.Cur
 }
 
 // returns the specified next gw config
-func (m *Machine) GetNextConfig() GatewayConfig {
+func (m *Machine) GetNextConfig() *GatewayConfig {
 	m.confMu.RLock()
 	defer m.confMu.RUnlock()
-	return *m.gwConfig.Next
+	return m.gwConfig.Next
+}
+
+// returns the specified prev gw config
+func (m *Machine) GetPrevConfig() *GatewayConfig {
+	m.confMu.RLock()
+	defer m.confMu.RUnlock()
+	return m.gwConfig.Prev
 }
 
 // returns the current number of shards
