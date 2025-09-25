@@ -47,7 +47,7 @@ func (a *API) SetupRoutes(router *chi.Mux) {
 		r.Post("/ensureproxy", a.EnsureProxy)
 		r.Post("/config", a.SetConfig)
 		r.Post("/rollout", a.SetRollout)
-		r.Post("/rollback", a.SetRollout)
+		r.Post("/rollback", a.SetRollback)
 		r.Post("/deploy", a.SetDeploy)
 		r.Post("/pause", a.SetPause)
 		r.Post("/restart/{idx}", a.RestartPod)
