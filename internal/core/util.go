@@ -63,6 +63,7 @@ type ShardState struct {
 	Latency            int32 `json:"latency"`
 	LastHeartbeat      int32 `json:"last_heartbeat"`
 	LastConnection     int32 `json:"last_connection"`
+	LastReconnect      int32 `json:"last_reconnect"`
 	ClusterID          int32 `json:"cluster_id"`
 }
 
@@ -87,3 +88,5 @@ func GenerateRandomID() string {
 	}
 	return string(bytes)
 }
+
+var ErrPaused = errors.New("paused")

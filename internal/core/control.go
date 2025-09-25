@@ -15,6 +15,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	k8sErrors "k8s.io/apimachinery/pkg/api/errors"
 )
 
 // type for state machine states
@@ -129,7 +131,7 @@ func NewController(etcdCli *etcd.Client, k8sCli *k8s.Client, eventChan chan Even
 			EventError:    Degraded,
 			EventRollback: Rollback,
 			EventSigterm:  Shutdown,
-			EventPause:    Degraded,
+			EventPause:    Paused,
 		},
 		Deploy: {
 			EventHealthy:  Monitor,
@@ -148,9 +150,9 @@ func NewController(etcdCli *etcd.Client, k8sCli *k8s.Client, eventChan chan Even
 			EventOk:      Monitor,
 			EventError:   Degraded,
 			EventSigterm: Shutdown,
+			EventPause:   Paused,
 		},
 		Paused: {
-			EventResume:     Rollout,
 			EventRolloutCmd: Rollout,
 			EventRollback:   Rollback,
 			EventDeployCmd:  Deploy,
@@ -233,6 +235,15 @@ func (m *Machine) SetConfig(configStr []byte) error {
 	m.gwConfig.Next.PodDefinition = config.PodDefinition
 	m.gwConfig.Next.NumClusters = (config.NumShards + m.config.MaxConcurrency - 1) / m.config.MaxConcurrency
 	m.confMu.Unlock()
+
+	pod, err := m.generatePod(0, m.gwConfig.Next)
+	if err != nil {
+		return err
+	}
+	err = m.k8sClient.ValidatePod(context.Background(), pod)
+	if err != nil {
+		return err
+	}
 
 	conf, err := json.Marshal(m.gwConfig)
 	if err != nil {
@@ -360,6 +371,31 @@ func (m *Machine) makeShardsSlice() {
 		m.status.Shards[i].ShardID = int32(i)
 		m.status.Shards[i].ClusterID = int32(i / m.config.MaxConcurrency)
 	}
+}
+
+func (m *Machine) RestartPod(index int) error {
+	ctx := context.Background()
+	podName := fmt.Sprintf("pluralkit-gateway-%s-%d", m.gwConfig.Cur.RevisionID, index)
+	err := m.k8sClient.DeletePod(ctx, podName)
+	if err != nil && !k8sErrors.IsNotFound(err) {
+		return err
+	} else {
+		err = m.k8sClient.WaitForDeleted(ctx, []string{podName}, 1*time.Minute)
+		if err != nil {
+			return err
+		}
+	}
+
+	newPod, err := m.generatePod(index, m.gwConfig.Cur)
+	if err != nil {
+		return err
+	}
+	_, err = m.k8sClient.CreatePod(ctx, newPod)
+	if err != nil {
+		return err
+	}
+
+	return nil
 }
 
 // helper function for looking up the next state given an event

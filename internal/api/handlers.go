@@ -6,7 +6,9 @@ import (
 	"log/slog"
 	"net/http"
 	"pluralkit/manager/internal/core"
+	"strconv"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/render"
 )
 
@@ -169,6 +171,16 @@ func (a *API) SetRollout(w http.ResponseWriter, r *http.Request) {
 }
 
 /*
+Handler for /actions/rollback
+
+Sends a rollout event command to start a rollout on manager
+*/
+func (a *API) SetRollback(w http.ResponseWriter, r *http.Request) {
+	a.Controller.SendEvent(core.EventRollback)
+	w.Write([]byte(""))
+}
+
+/*
 Handler for /actions/deploy
 
 Sends a deploy event command to start a deploy on manager
@@ -189,11 +201,21 @@ func (a *API) SetPause(w http.ResponseWriter, r *http.Request) {
 }
 
 /*
-Handler for /actions/resume
+Handler for /actions/restart/{idx}
 
-Sends a deploy event command to start a deploy on manager
+Restarts the given pod
 */
-func (a *API) SetResume(w http.ResponseWriter, r *http.Request) {
-	a.Controller.SendEvent(core.EventResume)
+func (a *API) RestartPod(w http.ResponseWriter, r *http.Request) {
+	idx, err := strconv.Atoi(chi.URLParam(r, "idx"))
+	if err != nil {
+		http.Error(w, "invalid argument", http.StatusBadGateway)
+		return
+	}
+	err = a.Controller.RestartPod(idx)
+	if err != nil {
+		http.Error(w, "error while restarting pod", http.StatusInternalServerError)
+		a.Logger.Error("error while restarting pod", slog.Any("error", err))
+		return
+	}
 	w.Write([]byte(""))
 }

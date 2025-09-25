@@ -241,3 +241,14 @@ func (c *Client) WaitForDeleted(ctx context.Context, names []string, timeout tim
 		return false, nil
 	})
 }
+
+func (c *Client) ValidatePod(ctx context.Context, pod *corev1.Pod) error {
+	_, err := c.k8sClient.CoreV1().Pods(c.namespace).Create(ctx, pod, metav1.CreateOptions{
+		DryRun: []string{metav1.DryRunAll},
+	})
+
+	if err != nil {
+		return err
+	}
+	return nil
+}
