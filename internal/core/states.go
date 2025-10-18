@@ -369,6 +369,7 @@ func rollout(ctx context.Context, m *Machine, curConfig *GatewayConfig, nextConf
 				m.logger.Warn("error while parsing rollout index")
 			}
 		}
+		m.logger.Info("resuming", slog.Any("status", status))
 	} else {
 		status = "starting"
 	}
@@ -382,7 +383,7 @@ func rollout(ctx context.Context, m *Machine, curConfig *GatewayConfig, nextConf
 		return errors.New("unexpected number of pods")
 	}
 
-	if !CheckPodNames(ctx, m) {
+	if !resume && !CheckPodNames(ctx, m) {
 		return errors.New("incorrect pod names, rollout cannot proceed")
 	}
 
@@ -392,16 +393,6 @@ func rollout(ctx context.Context, m *Machine, curConfig *GatewayConfig, nextConf
 			nextConfig.RevisionID = GenerateRandomID() //ensure our uid is not the same, despite very very small odds
 		}
 	}
-
-	//update our config
-	m.confMu.Lock()
-	if m.gwConfig.Next != nil && !resume {
-		m.gwConfig.Prev = curConfig
-		m.gwConfig.Cur = nextConfig
-		m.gwConfig.Next = nil
-	}
-	m.confMu.Unlock()
-	m.saveConfigToEtcd()
 
 	//begin rollout!
 	m.status.RolloutTotal = &numClusters
@@ -420,19 +411,19 @@ func rollout(ctx context.Context, m *Machine, curConfig *GatewayConfig, nextConf
 		}
 		newPod = pod.Name
 
-		newPodExists, err := m.k8sClient.PodExists(ctx, newPod)
-		if err != nil {
-			return err
-		}
+		// newPodExists, err := m.k8sClient.PodExists(ctx, newPod)
+		// if err != nil {
+		// 	return err
+		// }
 		oldPodExists, err := m.k8sClient.PodExists(ctx, oldPod)
 		if err != nil {
 			return err
 		}
-		if newPodExists && oldPodExists {
-			status = "switching_old"
-		} else if newPodExists {
-			status = "switching_new"
-		}
+		// if newPodExists && oldPodExists {
+		// 	status = "switching_old"
+		// } else if newPodExists {
+		// 	status = "switching_new"
+		// }
 
 		m.etcdClient.Put(ctx, "rollout_status", "creating")
 		switch status {
@@ -533,6 +524,16 @@ func rollout(ctx context.Context, m *Machine, curConfig *GatewayConfig, nextConf
 	m.status.RolloutIDX = nil
 	m.status.RolloutTotal = nil
 
+	//update our config
+	m.confMu.Lock()
+	if m.gwConfig.Next != nil && !resume {
+		m.gwConfig.Prev = curConfig
+		m.gwConfig.Cur = nextConfig
+		m.gwConfig.Next = nil
+	}
+	m.confMu.Unlock()
+	m.saveConfigToEtcd()
+
 	return nil
 }
 
@@ -568,7 +569,7 @@ func RolloutState(m *Machine) Event {
 	err := rollout(ctx, m, m.gwConfig.Cur, m.gwConfig.Next, Forwards)
 	if err != nil {
 		m.logger.Error("error in rollout", slog.Any("error", err))
-		if err == ErrPaused {
+		if err == ErrPaused || err == context.Canceled {
 			return EventPause
 		}
 		return EventError
@@ -686,6 +687,8 @@ func DeployState(m *Machine) Event {
 func RollbackState(m *Machine) Event {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	//check here if we're in a rollout already -- if we are, get the right configs
 
 	if m.gwConfig.Cur == nil || m.gwConfig.Prev == nil {
 		m.logger.Error("config is not set!")

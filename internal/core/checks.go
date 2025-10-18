@@ -25,7 +25,7 @@ func CheckNumPods(ctx context.Context, m *Machine) bool {
 	if err != nil {
 		return false
 	}
-	if len(pods.Items) != (m.GetNumShards() / m.config.MaxConcurrency) {
+	if len(pods.Items) != ((m.GetNumShards() + m.config.MaxConcurrency - 1) / m.config.MaxConcurrency) {
 		return false
 	}
 	return true

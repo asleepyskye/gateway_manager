@@ -39,16 +39,16 @@ const (
 )
 
 const (
-	EventOk         Event = "ok"
-	EventHealthy    Event = "healthy"
-	EventNotHealthy Event = "not_healthy"
-	EventRolloutCmd Event = "rollout_command"
-	EventDeployCmd  Event = "deploy_command"
-	EventError      Event = "error"
-	EventRollback   Event = "rollback"
-	EventPause      Event = "pause"
-	EventResume     Event = "resume"
-	EventSigterm    Event = "sigterm"
+	EventOk          Event = "ok"
+	EventHealthy     Event = "healthy"
+	EventNotHealthy  Event = "not_healthy"
+	EventRolloutCmd  Event = "rollout_command"
+	EventDeployCmd   Event = "deploy_command"
+	EventError       Event = "error"
+	EventRollbackCmd Event = "rollback"
+	EventPause       Event = "pause"
+	EventResume      Event = "resume"
+	EventSigterm     Event = "sigterm"
 )
 
 // helper struct for a gateway config
@@ -119,32 +119,33 @@ func NewController(etcdCli *etcd.Client, k8sCli *k8s.Client, eventChan chan Even
 
 	m.transitions = map[State]map[Event]State{
 		Monitor: {
-			EventHealthy:    Monitor,
-			EventNotHealthy: Degraded,
-			EventRolloutCmd: Rollout,
-			EventDeployCmd:  Deploy,
-			EventRollback:   Rollback,
-			EventSigterm:    Shutdown,
+			EventHealthy:     Monitor,
+			EventNotHealthy:  Degraded,
+			EventRolloutCmd:  Rollout,
+			EventDeployCmd:   Deploy,
+			EventRollbackCmd: Rollback,
+			EventSigterm:     Shutdown,
 		},
 		Rollout: {
-			EventHealthy:  Monitor,
-			EventError:    Degraded,
-			EventRollback: Rollback,
-			EventSigterm:  Shutdown,
-			EventPause:    Paused,
+			EventHealthy:     Monitor,
+			EventError:       Degraded,
+			EventRollbackCmd: Rollback,
+			EventSigterm:     Shutdown,
+			EventPause:       Paused,
 		},
 		Deploy: {
-			EventHealthy:  Monitor,
-			EventError:    Degraded,
-			EventRollback: Rollback,
-			EventSigterm:  Shutdown,
+			EventHealthy:     Monitor,
+			EventError:       Degraded,
+			EventRollbackCmd: Rollback,
+			EventSigterm:     Shutdown,
 		},
 		Degraded: {
-			EventHealthy:    Monitor,
-			EventError:      Degraded,
-			EventSigterm:    Shutdown,
-			EventRolloutCmd: Rollout,
-			EventDeployCmd:  Deploy,
+			EventHealthy:     Monitor,
+			EventError:       Degraded,
+			EventSigterm:     Shutdown,
+			EventRolloutCmd:  Rollout,
+			EventDeployCmd:   Deploy,
+			EventRollbackCmd: Rollback,
 		},
 		Rollback: {
 			EventOk:      Monitor,
@@ -153,10 +154,10 @@ func NewController(etcdCli *etcd.Client, k8sCli *k8s.Client, eventChan chan Even
 			EventPause:   Paused,
 		},
 		Paused: {
-			EventRolloutCmd: Rollout,
-			EventRollback:   Rollback,
-			EventDeployCmd:  Deploy,
-			EventSigterm:    Shutdown,
+			EventRolloutCmd:  Rollout,
+			EventRollbackCmd: Rollback,
+			EventDeployCmd:   Deploy,
+			EventSigterm:     Shutdown,
 		},
 	}
 

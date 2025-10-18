@@ -22,9 +22,9 @@ func (a *API) Ping(w http.ResponseWriter, r *http.Request) {
 }
 
 /*
-Handler for /ping
+Handler for /ensureproxy
 
-returns "pong!"
+calls ensureproxy on the controller to ensure the proxy is running
 */
 func (a *API) EnsureProxy(w http.ResponseWriter, r *http.Request) {
 	a.Controller.EnsureProxy(r.Context())
@@ -176,7 +176,7 @@ Handler for /actions/rollback
 Sends a rollout event command to start a rollout on manager
 */
 func (a *API) SetRollback(w http.ResponseWriter, r *http.Request) {
-	a.Controller.SendEvent(core.EventRollback)
+	a.Controller.SendEvent(core.EventRollbackCmd)
 	w.Write([]byte(""))
 }
 
